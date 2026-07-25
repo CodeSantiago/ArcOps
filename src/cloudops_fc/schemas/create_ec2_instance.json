@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/cloudops-fc/schemas/create_ec2_instance.json",
+  "title": "Create EC2 Instance",
+  "description": "Schema for the create_ec2_instance function-calling tool",
+  "type": "object",
+  "properties": {
+    "instance_type": {
+      "type": "string",
+      "description": "The EC2 instance type (e.g. t3.micro, m5.large)"
+    },
+    "ami_id": {
+      "type": "string",
+      "description": "The AMI ID to use for the instance"
+    },
+    "region": {
+      "type": "string",
+      "description": "The AWS region where the instance will be launched"
+    },
+    "min_count": {
+      "type": "integer",
+      "description": "Minimum number of instances to launch"
+    },
+    "max_count": {
+      "type": "integer",
+      "description": "Maximum number of instances to launch"
+    }
+  },
+  "required": ["instance_type", "ami_id", "region", "min_count", "max_count"],
+  "additionalProperties": false
+}

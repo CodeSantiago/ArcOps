@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+.env/
+
+# ML / Data — OneDrive-safe: ignore large binary artifacts
+models/
+checkpoints/
+datasets/
+*.pt
+*.pth
+*.bin
+*.onnx
+*.safetensors
+*.ckpt
+*.h5
+*.hdf5
+
+# Tooling & IDE
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.mypy/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# uv
+uv.lock
+
+# Coverage
+.coverage
+htmlcov/
+
+# Temporary
+tmp/
+temp/
