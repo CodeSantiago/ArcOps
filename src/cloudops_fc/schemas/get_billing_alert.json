@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/cloudops-fc/schemas/get_billing_alert.json",
+  "title": "Get Billing Alert",
+  "description": "Retrieve AWS cost and usage data via Cost Explorer",
+  "type": "object",
+  "properties": {
+    "time_period_start": {
+      "type": "string",
+      "pattern": "\\d{4}-\\d{2}-\\d{2}",
+      "description": "Start date (YYYY-MM-DD)"
+    },
+    "time_period_end": {
+      "type": "string",
+      "pattern": "\\d{4}-\\d{2}-\\d{2}",
+      "description": "End date (YYYY-MM-DD)"
+    },
+    "granularity": {
+      "type": "string",
+      "enum": ["DAILY", "MONTHLY", "HOURLY"],
+      "description": "Data aggregation granularity"
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["BlendedCost", "UnblendedCost", "UsageQuantity", "AmortizedCost", "NetUnblendedCost"]
+      },
+      "description": "Cost/metric types to retrieve"
+    },
+    "group_by_service": {
+      "type": "boolean",
+      "description": "Group results by AWS service"
+    }
+  },
+  "additionalProperties": false
+}
