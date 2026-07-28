@@ -16,7 +16,10 @@ env/
 # ML / Data — OneDrive-safe: ignore large binary artifacts
 models/
 checkpoints/
+checkpoints-1.5b/
 datasets/
+data/
+offload/
 *.pt
 *.pth
 *.bin
@@ -25,6 +28,33 @@ datasets/
 *.ckpt
 *.h5
 *.hdf5
+
+# Environment
+.env
+.env/
+
+# Debug / one-off scripts (kept local, not pushed)
+app/index.html
+PROJECT.md
+scripts/add_noise.py
+scripts/analyze_eval.py
+scripts/audit_all_fields.py
+scripts/audit_dataset.py
+scripts/check_emoji.py
+scripts/check_eval_struct.py
+scripts/check_noise.py
+scripts/check_results.py
+scripts/clean_emoji.py
+scripts/quick_test.py
+scripts/stress_test.py
+scripts/stress_test_v2.py
+scripts/test_from_hf.py
+scripts/test_lang.py
+scripts/test_mcp_func.py
+scripts/test_model.py
+scripts/test_prompts.py
+scripts/test_safety.py
+scripts/generate_dataset.py
 
 # Tooling & IDE
 .mypy_cache/
