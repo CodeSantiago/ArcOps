@@ -6,21 +6,31 @@ from pathlib import Path
 CACHE = Path.home() / ".arcops" / "server.port"
 PID_FILE = Path.home() / ".arcops" / "server.pid"
 
-# ── Direct inference (works everywhere including pip install) ───────────
+# ── Model selection ────────────────────────────────────────────────────
+MODELS = {
+    "7b": {"name": "Qwen/Qwen2.5-7B-Instruct", "adapter": "CodeSantiago/arcops"},
+    "1.5b": {"name": "Qwen/Qwen2.5-1.5B-Instruct", "adapter": "CodeSantiago/arcops-1.5b"},
+}
+MODEL_KEY = os.environ.get("ARC_OPS_MODEL", "7b")
+if "--light" in sys.argv:
+    MODEL_KEY = "1.5b"
+CFG = MODELS.get(MODEL_KEY, MODELS["7b"])
+
+# ── Direct inference ───────────────────────────────────────────────────
 _model, _tokenizer = None, None
 
 def infer(prompt: str) -> dict:
     global _model, _tokenizer
     if _model is None:
-        print("* Loading model (first time ~30s)...")
+        print(f"* Loading {MODEL_KEY} model (first time ~30s)...")
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         from peft import PeftModel
         bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
-        model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B-Instruct", quantization_config=bnb, device_map="auto", torch_dtype=torch.bfloat16)
-        model = PeftModel.from_pretrained(model, "CodeSantiago/arcops", offload_folder="/tmp/offload")
+        model = AutoModelForCausalLM.from_pretrained(CFG["name"], quantization_config=bnb, device_map="auto", torch_dtype=torch.bfloat16)
+        model = PeftModel.from_pretrained(model, CFG["adapter"], offload_folder="/tmp/offload")
         model.eval()
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct")
+        tokenizer = AutoTokenizer.from_pretrained(CFG["name"])
         tokenizer.pad_token = tokenizer.eos_token
         _model, _tokenizer = model, tokenizer
     
@@ -84,7 +94,7 @@ def main():
         return
 
     # Parse args
-    flags = {"--json","--real"}
+    flags = {"--json","--real","--light"}
     for f in flags:
         if f in sys.argv: os.environ.setdefault("ARC_OPS_REAL", "1" if f == "--real" else "")
     prompt = " ".join(a for a in sys.argv[1:] if a not in flags)
