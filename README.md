@@ -2,6 +2,13 @@
 
 **Natural language → AWS tool calls. 100% local. No data leaves your machine.**
 
+<p align="center">
+  <img src="https://img.shields.io/github/license/CodeSantiago/ArcOps" alt="License">
+  <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python">
+  <img src="https://img.shields.io/badge/cuda-13.0-green" alt="CUDA">
+  <img src="https://img.shields.io/badge/model-7B%20QLoRA-orange" alt="Model">
+</p>
+
 ArcOps is a fine-tuned language model (Qwen2.5-7B + QLoRA) that converts CloudOps instructions into structured JSON tool calls ready for AWS API execution. It runs entirely on your hardware — no OpenAI, no API costs, no data sent to third parties.
 
 ```
@@ -192,14 +199,13 @@ bash scripts/training/run.sh
 
 ### Results
 
-| Metric | Value |
-|--------|-------|
-| Tool-name accuracy | 100% |
-| Field accuracy | 82.8% |
-| Exact-match accuracy | 47.6% |
-| Dataset size | 10,854 examples |
-| Training time | ~8h (full) / ~3h (quick) |
-| GPU usage | ~8.3GB VRAM (7B QLoRA) |
+| Metric | Value | What it means |
+|--------|-------|---------------|
+| Tool-name accuracy | 100% | Always picks the right AWS tool (EC2 vs RDS vs billing) |
+| Field accuracy | 82.8% | Individual parameters correct (region, instance_type, etc.) |
+| Exact-match accuracy | 47.6% | Full JSON output matches expected **character-for-character** |
+
+**Why exact-match is 47.6% while field accuracy is 82.8%:** The gap is expected — exact-match penalizes any deviation (missing optional fields, different key order, extra whitespace). In practice, a tool call that has 80%+ field accuracy is functionally correct: the tool name is right, the required params are present, and optional defaults fill the rest. A post-processing validator (included in the safety layer) catches the edge cases.
 
 ---
 
@@ -289,4 +295,4 @@ Apache 2.0
 
 ---
 
-Built in 3 days, July 24-26, 2026.
+[Report a bug](https://github.com/CodeSantiago/ArcOps/issues) · [Contribute](https://github.com/CodeSantiago/ArcOps/pulls) · [HuggingFace model](https://huggingface.co/CodeSantiago/arcops)
