@@ -83,6 +83,32 @@ def main():
         print("* Use without 'serve' for one-shot inference.")
         return
 
+    if sys.argv[1] == "--eval":
+        print("\n  ArcOps Quick Evaluation\n")
+        tests = [
+            ("Create a t3.micro server in us-east-1", "create_ec2_instance", {"region":"us-east-1","instance_type":"t3.micro"}),
+            ("Restart the production database in us-west-2", "restart_database", {"db_instance_identifier":"production","region":"us-west-2"}),
+            ("How much did we spend this month?", "get_billing_alert", {"granularity":"MONTHLY"}),
+            ("Create a server with port 80 open", "create_ec2_instance", {"region":"us-east-1","instance_type":"t3.micro","security_group_rules":[{"port":80,"protocol":"tcp","cidr":"0.0.0.0/0"}]}),
+            ("Restart analytics-db with failover", "restart_database", {"db_instance_identifier":"analytics-db","region":"us-east-1","force_failover":True}),
+        ]
+        exact, field, total = 0, 0, 0
+        for prompt, exp_tool, exp_args in tests:
+            r = infer(prompt)
+            t_ok = r.get("name") == exp_tool
+            args = r.get("arguments",{})
+            f_ok = sum(1 for k,v in exp_args.items() if k in args and args[k] == v)
+            f_total = len(exp_args)
+            e_ok = t_ok and f_ok == f_total
+            exact += 1 if e_ok else 0
+            field += f_ok
+            total += f_total
+            print(f"  {'OK' if e_ok else 'XX'} tool={r.get('name')}  fields={f_ok}/{f_total}  {prompt[:50]}")
+        print(f"\n  Tool accuracy: {sum(1 for p,_,_ in tests if infer(p).get('name') == p)/len(tests):.0%}")
+        print(f"  Field accuracy: {field}/{total} = {field/total:.1%}")
+        print(f"  Exact match: {exact}/{len(tests)} = {exact/len(tests):.0%}")
+        return
+
     if sys.argv[1] in ("start","stop","dashboard","tui"):
         print("* Use 'arcops \"your prompt\"' directly (auto-loads model).")
         return
