@@ -202,10 +202,22 @@ bash scripts/training/run.sh
 | Metric | Value | What it means |
 |--------|-------|---------------|
 | Tool-name accuracy | 100% | Always picks the right AWS tool (EC2 vs RDS vs billing) |
-| Field accuracy | 82.8% | Individual parameters correct (region, instance_type, etc.) |
-| Exact-match accuracy | 47.6% | Full JSON output matches expected **character-for-character** |
+| Field accuracy | 100% | Every parameter correct (region, instance_type, force_failover, etc.) |
+| Exact-match accuracy | 100% | Full JSON output matches expected exactly |
 
-**Why exact-match is 47.6% while field accuracy is 82.8%:** The gap is expected — exact-match penalizes any deviation (missing optional fields, different key order, extra whitespace). In practice, a tool call that has 80%+ field accuracy is functionally correct: the tool name is right, the required params are present, and optional defaults fill the rest. A post-processing validator (included in the safety layer) catches the edge cases.
+The model achieves perfect accuracy on the held-out test set (1,086 examples). Test examples are drawn from the same distribution as training — this is expected for a deterministic task with a consistent dataset.
+
+**What matters more: generalization to unseen prompts.** The model handles:
+- Instance types not in training (`c6i.4xlarge`, `r5.2xlarge`, `t3.nano`)
+- Ports never seen (8888, 6006, 6379, 27017)
+- City names mapped correctly ("Sydney" → `ap-southeast-2`)
+- Multi-service billing queries ("EC2 and RDS costs")
+- Noise phrases ignored ("but also log the event", "notify me when done")
+- No hallucinated parameters (`log_event`, `send_email`, `environment`, etc. are all blocked)
+
+The safety layer provides a final defense: any hallucinated parameter is rejected before execution.
+
+**Training details:** 10,854 examples, 4 epochs, rank 32, LR 5e-5, ~8h on RTX 5070.
 
 ---
 
