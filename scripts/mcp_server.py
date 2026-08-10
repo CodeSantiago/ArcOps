@@ -26,22 +26,32 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
-# Add project root
+# Add project root + src so both scripts.* and cloudops_fc.* resolve
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+for _p in (str(PROJECT_ROOT), str(PROJECT_ROOT / "src")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import PeftModel
+import torch  # noqa: E402
+from peft import PeftModel  # noqa: E402
+from transformers import (  # noqa: E402
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
+
+from cloudops_fc.models import resolve_model_config  # noqa: E402
+from cloudops_fc.safety import check  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("cloudops-mcp")
 
-# Model paths
-MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-ADAPTER_PATH = str(PROJECT_ROOT / "checkpoints" / "final")
+# Model selection is unified through the package registry. The adapter
+# defaults to a local checkpoint when present, otherwise ARC_OPS_ADAPTER.
+# Resolution happens lazily in load_model() so a misconfigured ARC_OPS_MODEL
+# fails with a clear message instead of crashing the server at import.
+ADAPTER_PATH = os.environ.get("ARC_OPS_ADAPTER", str(PROJECT_ROOT / "checkpoints" / "final"))
 
 # Singleton model (loaded once)
 _model = None
@@ -54,22 +64,26 @@ def load_model():
     if _model is not None:
         return _model, _tokenizer
 
-    log.info("Loading 4-bit base model...")
+    model_cfg = resolve_model_config()
+    adapter = model_cfg.require_adapter()
+    model_name = model_cfg.name
+
+    log.info("Loading 4-bit base model %s...", model_name)
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
     )
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
+        model_name,
         quantization_config=bnb_config,
         device_map="auto",
         torch_dtype=torch.bfloat16,
     )
-    model = PeftModel.from_pretrained(model, ADAPTER_PATH, offload_folder="offload")
+    model = PeftModel.from_pretrained(model, adapter, offload_folder="offload")
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
 
     _model, _tokenizer = model, tokenizer
@@ -82,7 +96,13 @@ def generate_tool_call(prompt: str) -> dict:
     model, tokenizer = load_model()
 
     messages = [
-        {"role": "system", "content": "You are a CloudOps infrastructure assistant. Output ONLY the JSON tool call. No explanations, no markdown."},
+        {
+            "role": "system",
+            "content": (
+                "You are a CloudOps infrastructure assistant. "
+                "Output ONLY the JSON tool call. No explanations, no markdown."
+            ),
+        },
         {"role": "user", "content": prompt},
     ]
 
@@ -110,23 +130,36 @@ def generate_tool_call(prompt: str) -> dict:
 
 
 def execute_on_localstack(tool_call: dict) -> dict:
-    """Execute the tool call against LocalStack (if running)."""
+    """Execute the tool call against LocalStack (if running).
+
+    The tool call is validated by the canonical safety module first:
+    unknown parameters and missing required identifiers are rejected instead
+    of silently defaulting (no ``test-db`` fallback).
+    """
     name = tool_call.get("name", "")
     args = tool_call.get("arguments", {})
+
+    safety = check(name, args, env="development")
+    if safety.blocked or safety.errors:
+        return {
+            "status": "blocked",
+            "errors": safety.errors,
+            "tool_call": tool_call,
+        }
 
     # Map tool names to AWS CLI commands
     aws_commands = {
         "create_ec2_instance": [
             "aws", "ec2", "run-instances",
-            "--region", args.get("region", "us-east-1"),
-            "--instance-type", args.get("instance_type", "t3.micro"),
+            "--region", args["region"],
+            "--instance-type", args["instance_type"],
             "--endpoint-url", "http://localhost:4566",
             "--no-cli-pager",
         ],
         "restart_database": [
             "aws", "rds", "reboot-db-instance",
-            "--region", args.get("region", "us-east-1"),
-            "--db-instance-identifier", args.get("db_instance_identifier", "test-db"),
+            "--region", args["region"],
+            "--db-instance-identifier", args["db_instance_identifier"],
             "--endpoint-url", "http://localhost:4566",
             "--no-cli-pager",
         ],
@@ -171,37 +204,50 @@ def handle_request(request: dict) -> dict:
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": [
             {
                 "name": "cloudops_plan",
-                "description": "Convert a natural language instruction into a structured JSON tool call for AWS. Does NOT execute, only plans.",
+                "description": (
+                    "Convert a natural language instruction into a structured "
+                    "JSON tool call for AWS. Does NOT execute, only plans."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "prompt": {
                             "type": "string",
-                            "description": "Natural language instruction (e.g. 'create a t3.micro EC2 server in us-east-1')"
+                            "description": (
+                                "Natural language instruction (e.g. 'create a "
+                                "t3.micro EC2 server in us-east-1')"
+                            ),
                         }
                     },
-                    "required": ["prompt"]
-                }
+                    "required": ["prompt"],
+                },
             },
             {
                 "name": "cloudops_execute",
-                "description": "Convert an instruction to a JSON tool call AND execute it against LocalStack (local AWS simulator). Requires LocalStack on localhost:4566.",
+                "description": (
+                    "Convert an instruction to a JSON tool call AND execute it "
+                    "against LocalStack (local AWS simulator). Requires "
+                    "LocalStack on localhost:4566."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "prompt": {
                             "type": "string",
-                            "description": "Natural language instruction"
+                            "description": "Natural language instruction",
                         },
                         "execute": {
                             "type": "boolean",
-                            "description": "Set to true to execute against LocalStack, false to only return JSON",
-                            "default": False
-                        }
+                            "description": (
+                                "Set to true to execute against LocalStack, "
+                                "false to only return JSON"
+                            ),
+                            "default": False,
+                        },
                     },
-                    "required": ["prompt"]
-                }
-            }
+                    "required": ["prompt"],
+                },
+            },
         ]}}
 
     elif method == "tools/call":
@@ -210,7 +256,9 @@ def handle_request(request: dict) -> dict:
         prompt = arguments.get("prompt", "")
 
         if not prompt:
-            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": "Missing 'prompt' argument"}}
+            return {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32000, "message": "Missing 'prompt' argument"
+            }}
 
         try:
             tool_call = generate_tool_call(prompt)
@@ -227,13 +275,17 @@ def handle_request(request: dict) -> dict:
 
         except Exception as e:
             log.error("Error processing request: %s", e)
-            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(e)}}
+            return {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32000, "message": str(e)
+            }}
 
     elif method == "notifications/initialized":
         return {"jsonrpc": "2.0", "id": req_id, "result": {}}
 
     else:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+        return {"jsonrpc": "2.0", "id": req_id, "error": {
+            "code": -32601, "message": f"Method not found: {method}"
+        }}
 
 
 def main():

@@ -164,21 +164,21 @@ class TestTrainingConfigFromYaml:
     def test_from_yaml_loads_default_config(self) -> None:
         """Given default_config.yaml, from_yaml returns valid TrainingConfig."""
         config = TrainingConfig.from_yaml(DEFAULT_CONFIG_PATH)
-        assert config.model.name == "meta-llama/Meta-Llama-3-8B"
+        assert config.model.name == "Qwen/Qwen2.5-7B-Instruct"
         assert config.model.load_in_4bit is True
-        assert config.lora.r == 16
-        assert config.lora.lora_alpha == 32
+        assert config.lora.r == 32
+        assert config.lora.lora_alpha == 64
         assert config.training.per_device_train_batch_size == 1
         assert config.training.gradient_accumulation_steps == 4
-        assert config.training.learning_rate == 2e-4
-        assert config.training.num_train_epochs == 3
+        assert config.training.learning_rate == 1e-4
+        assert config.training.num_train_epochs == 6
         assert config.training.warmup_ratio == 0.03
         assert config.training.save_strategy == "epoch"
         assert config.training.eval_strategy == "epoch"
         assert config.training.bf16 is True
         assert config.training.max_seq_length == 512
         assert config.training.output_dir == "./checkpoints"
-        assert config.data.train_file == "../../data/training_dataset.jsonl"
+        assert config.data.train_file == "data/training_dataset.jsonl"
         assert config.data.val_split == 0.2
         assert config.data.seed == 42
 

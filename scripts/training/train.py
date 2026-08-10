@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 import torch
-from datasets import DatasetDict, load_dataset
+from datasets import Dataset, DatasetDict
 from peft import LoraConfig as PefLoraConfig
 from transformers import (
     AutoModelForCausalLM,
@@ -25,15 +25,25 @@ from transformers import (
     TrainingArguments,
     default_data_collator,
 )
-from trl import DataCollatorForCompletionOnlyLM, SFTTrainer
+from trl import SFTTrainer
 
 # Add project root so scripts/training/ can resolve imports
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from scripts.training.pipeline_utils import serialize_tool_calls
-from scripts.training.train_config import TrainingConfig
+from scripts.training.pipeline_utils import (  # noqa: E402
+    build_completion_labels,
+    build_splits,
+    serialize_tool_calls,
+)
+from scripts.training.template_families import (  # noqa: E402
+    KNOWN_FAMILIES,
+    parse_unseen_values,
+    split_file_by_template_family,
+    split_file_by_unseen_values,
+)
+from scripts.training.train_config import TrainingConfig  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,34 +62,145 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="Path to YAML config file (see default_config.yaml)",
     )
+    parser.add_argument(
+        "--split-mode",
+        choices=["standard", "template", "unseen"],
+        default="standard",
+        help=(
+            "Dataset partitioning (default: %(default)s). "
+            "standard = deduplicated 80/10/10 random split. "
+            "template = train only on families NOT held out for test "
+            "(--test-families). "
+            "unseen = train only on examples that do NOT contain the "
+            "configured unseen values (--unseen)."
+        ),
+    )
+    parser.add_argument(
+        "--test-families",
+        default=None,
+        help=(
+            "Comma-separated template families to EXCLUDE from training "
+            "(required with --split-mode template). "
+            f"Known families: {', '.join(KNOWN_FAMILIES)}"
+        ),
+    )
+    parser.add_argument(
+        "--unseen",
+        action="append",
+        default=[],
+        metavar="FIELD=value1,value2",
+        help=(
+            "Unseen-value holdout (repeatable, required with --split-mode unseen). "
+            "Examples carrying these values are excluded from training. "
+            "Fields: region, instance_type, db, port."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Split seed for template/unseen modes. Defaults to the config's "
+            "data.seed. Must match the seed used during evaluation."
+        ),
+    )
     return parser.parse_args(argv)
 
 
-def load_and_split_dataset(config: TrainingConfig) -> DatasetDict:
-    """Load JSONL dataset and split into train/val/test (80/10/10).
+def load_and_split_dataset(
+    config: TrainingConfig,
+    split_mode: str = "standard",
+    test_families: str | None = None,
+    unseen: list[str] | None = None,
+    seed: int | None = None,
+) -> tuple[DatasetDict, dict]:
+    """Load JSONL dataset, deduplicate, and split into train/val(/test).
+
+    Duplicate examples are removed BEFORE the split by canonical
+    ``(prompt, tool name, parsed arguments)`` key, so the same row can never
+    land in both train and test (no train/test leakage). The split is seeded
+    and reproducible; the returned metadata reports dataset size, unique row
+    count, duplicate count, split seed, and overlap/leakage detection.
+
+    ``split_mode``:
+    - ``standard``: 80/10/10 random split (the historical partition).
+    - ``template``: complete template families (``--test-families``) are
+      excluded from training entirely — the model never sees their phrasing.
+    - ``unseen``: examples containing configured values (``--unseen``) are
+      excluded from training — the model never sees those values.
+
+    Only ``train``/``val`` are returned to the trainer; the held-out test
+    partition is produced by eval.py from the SAME split call.
 
     Args:
         config: Validated training configuration.
+        split_mode: Which partitioning to use (standard/template/unseen).
+        test_families: Comma-separated families to exclude (template mode).
+        unseen: ``FIELD=value1,value2`` items to exclude (unseen mode).
 
     Returns:
-        A DatasetDict with ``train``, ``val``, and ``test`` splits.
+        A tuple of ``(DatasetDict, metadata)`` with ``train`` and ``val``
+        splits plus integrity metadata.
     """
-    log.info("Loading dataset from %s", config.data.train_file)
-    dataset = load_dataset("json", data_files=config.data.train_file, split="all")
+    log.info("Loading dataset from %s (split-mode=%s)", config.data.train_file, split_mode)
+    split_seed = seed if seed is not None else config.data.seed
 
-    # 80/20 split
-    first_split = dataset.train_test_split(test_size=0.2, seed=config.data.seed)
-    train = first_split["train"]
+    if split_mode == "standard":
+        splits, metadata = build_splits(config.data.train_file, config.data.seed)
+    elif split_mode == "template":
+        if not test_families:
+            raise ValueError(
+                "--split-mode template requires --test-families "
+                "(comma-separated family names)"
+            )
+        families = [f.strip() for f in test_families.split(",") if f.strip()]
+        splits, metadata = split_file_by_template_family(
+            config.data.train_file, families, seed=split_seed
+        )
+        log.info(
+            "Template holdout: train=%d val=%d | EXCLUDED test families=%s",
+            metadata["train_size"],
+            metadata["val_size"],
+            ",".join(metadata["test_families"]),
+        )
+    elif split_mode == "unseen":
+        if not unseen:
+            raise ValueError(
+                "--split-mode unseen requires at least one --unseen FIELD=value1,value2"
+            )
+        splits, metadata = split_file_by_unseen_values(
+            config.data.train_file, parse_unseen_values(unseen), seed=split_seed
+        )
+        log.info(
+            "Unseen-value holdout: train=%d val=%d | EXCLUDED unseen=%s",
+            metadata["train_size"],
+            metadata["val_size"],
+            metadata["unseen_values"],
+        )
+    else:
+        raise ValueError(f"Unknown split mode: {split_mode}")
 
-    # 20 -> 10/10 (val/test)
-    second_split = first_split["test"].train_test_split(test_size=0.5, seed=config.data.seed)
-
-    log.info("Dataset splits: train=%d, val=%d, test=%d", len(train), len(second_split["train"]), len(second_split["test"]))
-    return DatasetDict({
-        "train": train,
-        "val": second_split["train"],
-        "test": second_split["test"],
+    log.info(
+        "Dataset integrity: total=%d unique=%d duplicates=%d",
+        metadata["dataset_size"],
+        metadata["unique_after_dedup"],
+        metadata["duplicate_count"],
+    )
+    if split_mode == "standard":
+        log.info(
+            "Splits: train=%d, val=%d, test=%d (seed=%d, overlap=%d, leakage=%s)",
+            metadata["train_size"],
+            metadata["val_size"],
+            metadata["test_size"],
+            metadata["split_seed"],
+            metadata["train_test_overlap_count"],
+            metadata["leakage_detected"],
+        )
+    dataset = DatasetDict({
+        "train": Dataset.from_list(splits["train"]),
+        "val": Dataset.from_list(splits["val"]),
     })
+    return dataset, metadata
 
 
 def build_bnb_config(config: TrainingConfig) -> BitsAndBytesConfig:
@@ -143,12 +264,9 @@ def formatting_func(example: dict, tokenizer: AutoTokenizer) -> str:
         A ChatML-formatted string ready for tokenization.
     """
     messages_raw = example["messages"]
-    # Debug: print type and first few elements
     if isinstance(messages_raw[0], list):
-        log.warning("Messages format is list-of-lists, converting...")
         keys = ["role", "content"]
         messages = [dict(zip(keys, m[:2])) for m in messages_raw]
-        # Handle tool_calls separately (3rd element if present)
         for i, m in enumerate(messages_raw):
             if len(m) > 2 and m[2] is not None:
                 messages[i]["tool_calls"] = m[2]
@@ -172,8 +290,34 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     log.info("Config loaded from %s", args.config)
 
-    # 2. Load and split dataset
-    dataset = load_and_split_dataset(config)
+    # 2. Load, deduplicate, and split dataset
+    dataset, dataset_metadata = load_and_split_dataset(
+        config,
+        split_mode=args.split_mode,
+        test_families=args.test_families,
+        unseen=args.unseen,
+        seed=args.seed,
+    )
+
+    # Persist dataset-integrity metadata next to the training output so
+    # evaluation reports can include it (see eval.py).
+    import json as _json
+
+    dataset_metadata["mode"] = args.split_mode
+    if args.split_mode == "template":
+        dataset_metadata["test_families"] = (
+            [f.strip() for f in args.test_families.split(",") if f.strip()]
+            if args.test_families else []
+        )
+    if args.split_mode == "unseen":
+        dataset_metadata["unseen_values"] = dataset_metadata.get("unseen_values") or {}
+
+    meta_path = output_dir / "dataset_metadata.json"
+    meta_path.write_text(
+        _json.dumps(dataset_metadata, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    log.info("Dataset integrity metadata saved to %s", meta_path)
 
     # 3. Build 4-bit config + load model
     bnb_config = build_bnb_config(config)
@@ -205,14 +349,11 @@ def main(argv: list[str] | None = None) -> int:
     # 5. Build training arguments
     training_args = build_training_args(config, output_dir)
 
-    # 6. Build data collator (labels only on assistant responses)
-    response_template = "<|im_start|>assistant"
-    collator = DataCollatorForCompletionOnlyLM(
-        response_template=response_template,
-        tokenizer=tokenizer,
-    )
+    # 6. Pre-process dataset: format + tokenize with masked labels
+    response_marker = "<|im_start|>assistant"
+    marker_ids = tokenizer.encode(response_marker, add_special_tokens=False)
+    pad_token_id = tokenizer.pad_token_id
 
-    # 7. Pre-process dataset: format + tokenize
     def _format(example: dict) -> dict:
         messages_raw = example["messages"]
         if isinstance(messages_raw[0], list):
@@ -230,20 +371,34 @@ def main(argv: list[str] | None = None) -> int:
     dataset = dataset.map(_format, remove_columns=dataset["train"].column_names)
 
     def _tokenize(example: dict) -> dict:
-        result = tokenizer(example["text"], truncation=True, max_length=config.training.max_seq_length, padding="max_length")
-        result["labels"] = result["input_ids"].copy()
+        result = tokenizer(
+            example["text"],
+            truncation=True,
+            max_length=config.training.max_seq_length,
+            padding="max_length",
+        )
+        # Labels are masked to the assistant/tool-call response only; system,
+        # user, and padding tokens are set to -100 so the model never trains
+        # on them.
+        result["labels"] = build_completion_labels(
+            result["input_ids"],
+            marker_ids,
+            pad_token_id=pad_token_id,
+        )
         return result
 
     dataset = dataset.map(_tokenize, remove_columns=["text"])
 
     # 8. Create SFTTrainer with pre-tokenized dataset
+    # TRL >= 0.15 renamed the `tokenizer` kwarg to `processing_class`;
+    # a PreTrainedTokenizerBase is accepted directly as processing_class.
     tokenizer.model_max_length = config.training.max_seq_length
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset["train"],
         eval_dataset=dataset["val"],
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=default_data_collator,
         peft_config=peft_config,
     )
@@ -261,7 +416,10 @@ def main(argv: list[str] | None = None) -> int:
     log_path = output_dir / "training_metrics.json"
     if trainer.state.log_history:
         import json
-        log_path.write_text(json.dumps(trainer.state.log_history, indent=2, default=str), encoding="utf-8")
+        log_path.write_text(
+            json.dumps(trainer.state.log_history, indent=2, default=str),
+            encoding="utf-8",
+        )
         log.info("Training metrics saved to %s", log_path)
 
     return 0

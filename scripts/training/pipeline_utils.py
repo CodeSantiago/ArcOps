@@ -7,6 +7,7 @@ heavy ML libraries — they are pure Python and easily unit-testable.
 from __future__ import annotations
 
 import json
+import random
 import re
 from typing import Any
 
@@ -170,3 +171,202 @@ def compute_field_accuracy(predicted_args: dict, reference_args: dict) -> float:
         if key in predicted_args and predicted_args[key] == val
     )
     return matches / len(reference_args)
+
+
+# ── Dataset integrity (dedup + reproducible splitting + label masking) ───
+
+def extract_tool_call(messages: list[dict]) -> dict | None:
+    """Extract the expected tool call from an assistant message.
+
+    Returns a normalised dict with ``name`` and ``arguments`` keys, or
+    ``None`` if no tool call is present. Handles both the generator's
+    ``{"type": "function", "function": {"name", "arguments": "<json string>"}}``
+    shape and pre-parsed dict arguments.
+    """
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            tcs = msg["tool_calls"]
+            if tcs:
+                func = tcs[0].get("function", {})
+                name = func.get("name", "")
+                raw_args = func.get("arguments", "{}")
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                return {"name": name, "arguments": args}
+    return None
+
+
+def load_jsonl(path: str) -> list[dict]:
+    """Load a JSONL dataset file into a list of dict rows."""
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def canonical_tool_call_key(example: dict) -> tuple[str, str | None, str]:
+    """Return a canonical dedup key for a dataset example.
+
+    The key is ``(user_prompt, tool_name, canonical_arguments)`` where
+    ``canonical_arguments`` is the argument dict re-serialized with sorted
+    keys, so semantically identical tool calls produce the same key even if
+    the dict key order differs.
+    """
+    messages = example.get("messages") or []
+    user_prompt = ""
+    tool_name: str | None = None
+    arguments: Any = None
+    for msg in messages:
+        if msg.get("role") == "user" and msg.get("content"):
+            user_prompt = str(msg["content"]).strip()
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            tcs = msg["tool_calls"]
+            if tcs:
+                func = tcs[0].get("function", tcs[0])
+                tool_name = func.get("name")
+                raw = func.get("arguments", {})
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError):
+                        raw = {}
+                arguments = raw
+    canon_args = json.dumps(
+        arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return (user_prompt, tool_name, canon_args)
+
+
+def deduplicate_examples(examples: list[dict]) -> tuple[list[dict], dict]:
+    """Drop examples with duplicate canonical keys; keep the first occurrence.
+
+    Returns ``(unique_examples, stats)`` where ``stats`` reports how many
+    duplicates were removed — this is what prevents train/test leakage when
+    the same ``(prompt, tool, arguments)`` row would otherwise land in both
+    the training and the test split.
+    """
+    seen: dict[tuple[str, str | None, str], dict] = {}
+    duplicates = 0
+    for example in examples:
+        key = canonical_tool_call_key(example)
+        if key in seen:
+            duplicates += 1
+        else:
+            seen[key] = example
+    unique = list(seen.values())
+    stats = {
+        "total_before_dedup": len(examples),
+        "unique_after_dedup": len(unique),
+        "duplicate_count": duplicates,
+    }
+    return unique, stats
+
+
+def split_examples(
+    examples: list[dict], seed: int, holdout_ratio: float = 0.2
+) -> tuple[dict[str, list[dict]], dict]:
+    """Split examples into train/val/test (80/10/10) reproducibly.
+
+    The split replicates the historical train.py partition (80% train, then
+    the 20% holdout split 50/50 into val and test) but operates on the
+    deduplicated examples. The same seed always produces the same partition.
+
+    Returns ``(splits, metadata)`` where metadata reports the split seed,
+    split sizes, the train/test overlap count, and whether leakage was
+    detected. After deduplication the overlap is expected to be zero.
+    """
+    rng = random.Random(seed)
+    shuffled = list(examples)
+    rng.shuffle(shuffled)
+
+    n = len(shuffled)
+    n_holdout = int(round(n * holdout_ratio))
+    holdout = shuffled[:n_holdout]
+    train = shuffled[n_holdout:]
+    n_test = int(round(n_holdout / 2))
+    test = holdout[:n_test]
+    val = holdout[n_test:]
+
+    train_keys = {canonical_tool_call_key(ex) for ex in train}
+    test_keys = {canonical_tool_call_key(ex) for ex in test}
+    overlap_count = len(train_keys & test_keys)
+
+    splits = {"train": train, "val": val, "test": test}
+    metadata = {
+        "split_seed": seed,
+        "train_size": len(train),
+        "val_size": len(val),
+        "test_size": len(test),
+        "train_test_overlap_count": overlap_count,
+        "leakage_detected": overlap_count > 0,
+    }
+    return splits, metadata
+
+
+def build_splits(
+    train_file: str, seed: int, holdout_ratio: float = 0.2
+) -> tuple[dict[str, list[dict]], dict]:
+    """Load a JSONL dataset, deduplicate, and split reproducibly.
+
+    Returns ``(splits, metadata)``. This is the single code path used by both
+    ``train.py`` and ``eval.py`` so the test partition is always identical.
+    """
+    examples = load_jsonl(train_file)
+
+    unique, dedup_stats = deduplicate_examples(examples)
+    splits, split_meta = split_examples(unique, seed, holdout_ratio)
+
+    metadata = {
+        "dataset_size": len(examples),
+        **dedup_stats,
+        **split_meta,
+    }
+    return splits, metadata
+
+
+def build_completion_labels(
+    token_ids: list[int],
+    marker_token_ids: list[int],
+    pad_token_id: int | None = None,
+    ignore_index: int = -100,
+) -> list[int]:
+    """Build labels that train ONLY on the assistant/tool-call response.
+
+    Tokens before the first ``marker_token_ids`` occurrence (the
+    ``<|im_start|>assistant`` marker) get ``ignore_index`` (-100) so the model
+    never learns from system/user tokens. Trailing padding tokens also get
+    ``ignore_index``. If the marker is not found, every label is masked.
+
+    This is the pure, unit-testable equivalent of TRL's
+    ``DataCollatorForCompletionOnlyLM`` used by ``train.py``.
+    """
+    labels = [ignore_index] * len(token_ids)
+    if not marker_token_ids:
+        return labels
+
+    start = _find_subsequence(token_ids, marker_token_ids)
+    if start is None:
+        return labels
+
+    for i in range(start, len(token_ids)):
+        labels[i] = token_ids[i]
+
+    if pad_token_id is not None:
+        # Mask only the trailing run of pad tokens (the padding region).
+        i = len(token_ids) - 1
+        while i >= 0 and token_ids[i] == pad_token_id:
+            labels[i] = ignore_index
+            i -= 1
+
+    return labels
+
+
+def _find_subsequence(seq: list[int], sub: list[int]) -> int | None:
+    """Return the index of the first occurrence of *sub* in *seq*, or None."""
+    m = len(sub)
+    if m == 0 or m > len(seq):
+        return None
+    for i in range(len(seq) - m + 1):
+        if seq[i : i + m] == sub:
+            return i
+    return None
