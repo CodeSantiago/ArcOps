@@ -209,9 +209,11 @@ class ArcOpsApp(App):
 
     def on_mount(self) -> None:
         self.query_one("#status", Static).set_classes("status-neutral")
+        table = self.query_one("#resources", DataTable)
+        table.add_columns("#", "Type", "ID", "Info", "Tags")
         self._refresh()
         self.set_interval(5.0, self._interval_refresh)
-        self.query_one("#resources", DataTable).focus()
+        table.focus()
 
     # ── Status bar ──────────────────────────────────────────────────────
     def _set_status(self, text: str, kind: str = "neutral") -> None:
