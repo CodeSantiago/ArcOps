@@ -64,7 +64,9 @@ def check_quantized_model() -> dict[str, Any]:
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    quantization_config = BitsAndBytesConfig(load_in_4bit=(device == "cuda")) if device == "cuda" else None
+    quantization_config = (
+        BitsAndBytesConfig(load_in_4bit=(device == "cuda")) if device == "cuda" else None
+    )
     model = AutoModelForCausalLM.from_pretrained(
         _SMOKE_MODEL,
         quantization_config=quantization_config,

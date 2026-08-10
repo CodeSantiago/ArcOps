@@ -30,7 +30,10 @@ class TestParseToolCall:
 
     def test_json_in_code_fence(self) -> None:
         """Given JSON inside triple backticks, MUST extract and parse."""
-        text = 'Here is the result:\n```json\n{"name": "restart_database", "arguments": {"db_instance_identifier": "prod-db"}}\n```'
+        text = (
+            'Here is the result:\n```json\n{"name": "restart_database", '
+            '"arguments": {"db_instance_identifier": "prod-db"}}\n```'
+        )
         result = parse_tool_call(text)
         assert result is not None
         assert result["name"] == "restart_database"
@@ -49,7 +52,10 @@ class TestParseToolCall:
 
     def test_json_with_surrounding_text(self) -> None:
         """Given JSON with surrounding text, MUST extract the JSON part."""
-        text = 'Sure! Calling: {"name": "get_billing_alert", "arguments": {"metrics": ["BlendedCost"]}}'
+        text = (
+            'Sure! Calling: {"name": "get_billing_alert", '
+            '"arguments": {"metrics": ["BlendedCost"]}}'
+        )
         result = parse_tool_call(text)
         assert result is not None
         assert result["name"] == "get_billing_alert"
@@ -87,7 +93,10 @@ class TestComputeExactMatch:
     def test_missing_argument_key(self) -> None:
         """Given pred missing a key the ref has, MUST return False."""
         pred = {"name": "create_ec2_instance", "arguments": {"region": "us-east-2"}}
-        ref = {"name": "create_ec2_instance", "arguments": {"region": "us-east-2", "instance_type": "m5.large"}}
+        ref = {
+            "name": "create_ec2_instance",
+            "arguments": {"region": "us-east-2", "instance_type": "m5.large"},
+        }
         assert compute_exact_match(pred, ref) is False
 
     def test_both_empty_args(self) -> None:

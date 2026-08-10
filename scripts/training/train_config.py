@@ -26,7 +26,9 @@ class LoraConfig(BaseModel):
     lora_alpha: int = Field(default=32, gt=0, description="LoRA alpha scaling")
     target_modules: list[str] = Field(..., min_length=1, description="Modules to attach LoRA")
     lora_dropout: float = Field(default=0.1, ge=0.0, le=1.0, description="Dropout probability")
-    bias: str = Field(default="none", pattern=r"^(none|all|lora_only)$", description="LoRA bias mode")
+    bias: str = Field(
+        default="none", pattern=r"^(none|all|lora_only)$", description="LoRA bias mode"
+    )
 
 
 class TrainingArgs(BaseModel):
@@ -40,10 +42,18 @@ class TrainingArgs(BaseModel):
     num_train_epochs: int = Field(default=3, gt=0)
     warmup_ratio: float = Field(default=0.03, ge=0.0, le=1.0)
     logging_steps: int = Field(default=5, gt=0)
-    save_strategy: str = Field(default="epoch", pattern=r"^(steps|epoch|no)$")
-    eval_strategy: str = Field(default="epoch", pattern=r"^(steps|epoch|no)$")
-    save_steps: int | None = Field(default=None, ge=1, description="Used when save_strategy='steps'")
-    eval_steps: int | None = Field(default=None, ge=1, description="Used when eval_strategy='steps'")
+    save_strategy: str = Field(
+        default="epoch", pattern=r"^(steps|epoch|no)$"
+    )
+    eval_strategy: str = Field(
+        default="epoch", pattern=r"^(steps|epoch|no)$"
+    )
+    save_steps: int | None = Field(
+        default=None, ge=1, description="Used when save_strategy='steps'"
+    )
+    eval_steps: int | None = Field(
+        default=None, ge=1, description="Used when eval_strategy='steps'"
+    )
     save_total_limit: int = Field(default=3, ge=-1)
     optim: str = "adamw_8bit"
     bf16: bool = True

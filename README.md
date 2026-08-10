@@ -1,145 +1,124 @@
 # ArcOps
 
-**Natural language → AWS tool calls. 100% local. No data leaves your machine.**
+**Natural language → AWS JSON tool calls. 100% local. No data leaves your machine.**
 
 <p align="center">
-  <img src="https://img.shields.io/github/license/CodeSantiago/ArcOps" alt="License">
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python">
-  <img src="https://img.shields.io/badge/cuda-13.0-green" alt="CUDA">
   <img src="https://img.shields.io/badge/model-7B%20QLoRA-orange" alt="Model">
 </p>
 
-ArcOps is a fine-tuned language model (Qwen2.5-7B + QLoRA) that converts CloudOps instructions into structured JSON tool calls ready for AWS API execution. It runs entirely on your hardware — no OpenAI, no API costs, no data sent to third parties.
+ArcOps is a fine-tuned language model (Qwen2.5-7B-Instruct + QLoRA) that converts CloudOps instructions into structured JSON tool calls ready for AWS API execution. The model, inference, and safety checks all run on your hardware — no OpenAI, no API costs, no third-party data flow.
 
 ```
 User: "Create a t3.micro server in us-east-1 with port 80 open"
-  ↓  ArcOps fine-tuned model (local, private)
-Tool call: {"arguments": {"instance_type": "t3.micro", "region": "us-east-1",
-            "security_group_rules": [{"port": 80, "protocol": "tcp", "cidr": "0.0.0.0/0"}]},
-            "name": "create_ec2_instance"}
-  ↓  Safety layer (cost estimate, policy check, schema validation)
-  ↓  LocalStack (AWS simulator) or real AWS
+  ↓  ArcOps fine-tuned model (local, greedy decoding)
+Tool call: {"name": "create_ec2_instance", "arguments": {
+             "instance_type": "t3.micro", "region": "us-east-1",
+             "security_group_rules": [{"port": 80, "protocol": "tcp", "cidr": "0.0.0.0/0"}]}}
+  ↓  Safety layer (schema validation, cost estimate, policy check)
+  ↓  LocalStack (AWS simulator) — real AWS only with explicit opt-in
 Result: EC2 instance created (~$8/mo)
 ```
 
 ---
 
-## Features
-
-- **100% private** — runs on your GPU, no data leaves your machine
-- **Deterministic** — same input always produces same output (greedy decoding)
-- **No hallucinations** — schema validation blocks invented parameters
-- **Cost-aware** — estimates monthly costs before executing
-- **Safety layer** — blocks destructive actions, flags disruptive operations
-- **Multi-tool** — EC2, RDS, Cost Explorer (extensible)
-- **Bilingual** — works in English and Spanish
-- **LocalStack integration** — test without spending real AWS money
-
 ## Quick Start
 
 ### Prerequisites
 
-- NVIDIA GPU with 12GB+ VRAM (RTX 3070+, RTX 4070+, RTX 5070, etc.)
-- WSL2 with Ubuntu 24.04 (Windows) or native Linux
-- uv package manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- Docker (for LocalStack)
+- NVIDIA GPU with ~12 GB VRAM (the default 7B model loads in 4-bit; `--light` uses the 1.5B model for lighter hardware)
+- Python 3.12+
+- Docker (for LocalStack simulation)
+- AWS CLI (execution runs through the AWS CLI)
 
-### Install & Run
+### Install
+
+The base package is lightweight (CLI + safety, no PyTorch). Install the extras for the full experience:
 
 ```bash
-# Clone
-git clone https://github.com/CodeSantiago/ArcOps.git
-cd ArcOps
-
-# Setup
-uv sync
-
-# Download the fine-tuned adapter
-huggingface-cli download CodeSantiago/arcops --local-dir checkpoints/final
+pip install 'cloudops-fc[train,tui]'     # inference + terminal dashboard
 ```
 
+Extras: `train` (torch/transformers/peft ML stack), `tui` (Textual dashboard), `dev` (pytest, ruff, mypy).
+
+> **uv note:** use `uv sync --extra train --extra dev --extra tui` — bare `--extra` prunes the other extras.
+
+### Run
+
 ```bash
-# Quick prompt (auto-starts model server ~30s first time)
+# CLI — natural language to a tool call
 arcops "Create a t3.micro server in us-east-1 with port 80"
 
-# Result:
-# {"arguments": {"instance_type": "t3.micro", "region": "us-east-1", ...}, "name": "create_ec2_instance"}
-```
-
-### Docker (no GPU, slower)
-
-```bash
-docker pull codesantiago/arcops
-docker run -p 8080:8080 -e ARC_OPS_ADAPTER=codesantiago/arcops codesantiago/arcops
-# API: http://localhost:8080/predict -d '{"prompt":"Create a t3.micro server"}'
-```
-
----
-
-## Usage
-
-### CLI
-
-```bash
-# Basic prompt
-arcops "Create a t3.micro server in us-east-1 with port 80"
-
-# With safety check (auto-enabled)
-arcops "Restart the production database with failover"
-# → Shows cost, flags disruption, requires approval
-
-# JSON-only output (for scripts)
-arcops --json "Create a server with tags Name=web, Env=prod"
-
-# Execute against LocalStack
-arcops exec "Create a t3.micro server"
-
-# Open terminal dashboard
+# TUI — dashboard over the same engine (see Interfaces)
 arcops tui
 ```
 
-### TUI Dashboard
+First inference downloads the base model + adapter from HuggingFace and loads it in 4-bit (~30 s on the first call; subsequent calls are fast). Metadata commands (`arcops --help`, `arcops tools`) work without the ML stack.
 
-```bash
-cd ~/ArcOps && uv run python app/tui.py
+---
+
+## Interfaces
+
+The CLI and the TUI are **two faces over one engine** (`cloudops_fc.core`) — same inference, same safety checks, same AWS execution. There is no model-server socket; the TUI loads the model in-process.
+
+### CLI
+
+| Command | What it does |
+|---------|--------------|
+| `arcops "prompt"` | Infer a tool call and show it with safety feedback |
+| `arcops --json "prompt"` | Raw JSON output (for scripts) |
+| `arcops --light "prompt"` | Use the 1.5B model (needs `ARC_OPS_ADAPTER`) |
+| `arcops --eval` | Quick accuracy check on 5 built-in cases |
+| `arcops tools` | List supported tools |
+| `arcops tui` | Launch the terminal dashboard |
+
+### TUI
+
+A Textual 1.x dashboard (catppuccin-mocha theme) that lists resources, accepts natural-language prompts, and runs actions against LocalStack. Pure presentation — every AWS call and all inference live in the engine. Press `l` to launch LocalStack.
+
+### Other entry points
+
+- **API** — `app/api.py`, a localhost-bound FastAPI server (`python -m app.api`); optional `X-API-Key` via `ARC_OPS_API_KEY`.
+- **MCP server** — `scripts/mcp_server.py`, exposes ArcOps to opencode/Claude/Cursor as a local MCP tool.
+
+### Environment variables (see `.env.example`)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ARC_OPS_MODEL` | `7b` | Model size: `7b` or `1.5b` |
+| `ARC_OPS_ADAPTER` | `CodeSantiago/arcops` | HuggingFace adapter repo ID (required for `1.5b`) |
+| `ARC_OPS_OFFLOAD_DIR` | system temp | CPU offload folder for the adapter |
+| `ARC_OPS_REAL` | unset | Set to `1` to allow real-AWS mode |
+| `ARC_OPS_API_KEY` | unset | Optional API key for the REST API |
+
+---
+
+## How It Works
+
+1. **Inference** — `core.infer()` runs the fine-tuned model in-process (greedy decoding; deterministic output) and returns a JSON tool call.
+2. **Safety** — `cloudops_fc.safety` validates the call against the tool schemas before anything executes: unknown parameters are blocked, missing required fields are blocked, cost is estimated, disruptive actions require approval.
+3. **Execution** — tool calls run through the AWS CLI against **LocalStack by default**. Real AWS is never a default: it requires `ARC_OPS_REAL=1` *and* an interactive confirmation.
+
+## Safety Layer
+
+One canonical module (`cloudops_fc.safety`) is used by every interface. No tool call executes without passing it.
+
+| Check | What it does |
+|-------|-------------|
+| Schema validation | Rejects invented parameters (e.g. `log_event`) |
+| Required fields | Blocks calls missing mandatory params (no silent defaults) |
+| Unknown tools | Blocks tools outside the schema |
+| Cost estimation | Shows a monthly cost estimate before creating resources |
+| Approval | Destructive/disruptive actions (e.g. DB restart, terminate) require explicit confirmation |
+| Policy enforcement | Blocks destructive operations in the `production` environment |
+
 ```
+> Create a t3.micro server in us-east-1
 
-Interactive terminal UI with:
-- Real-time resource list (EC2, RDS)
-- Create (AI-powered), Stop, Start, Delete
-- Tag management
-- LocalStack health monitoring
+-- Safety Check --
+Estimated cost: ~$8/mo (t3.micro x1)
 
-### MCP Server (for opencode, Claude, Cursor)
-
-```json
-{
-  "mcp": {
-    "arcops": {
-      "command": ["uv", "run", "python", "scripts/mcp_server.py"],
-      "type": "local"
-    }
-  }
-}
-```
-
-Then from any MCP client: `"Create a t3.micro server in us-east-1"`
-
-### API
-
-```bash
-# Start API
-docker run -p 8080:8080 codesantiago/arcops
-
-# Predict
-curl -s localhost:8080/predict \
-  -d '{"prompt":"Create a t3.micro server in us-east-1"}' \
-  -H "Content-Type: application/json"
-
-# Predict with safety check
-curl -s localhost:8080/predict/safe \
-  -d '{"prompt":"Restart the production database"}' \
-  -H "Content-Type: application/json"
+[ok] Created i-12345678
 ```
 
 ---
@@ -148,156 +127,135 @@ curl -s localhost:8080/predict/safe \
 
 | Tool | AWS API | Parameters |
 |------|---------|------------|
-| `create_ec2_instance` | EC2 RunInstances | region (required), instance_type (required), security_group_rules, tags, key_name, subnet_id, associate_public_ip |
-| `restart_database` | RDS RebootDBInstance | db_instance_identifier (required), region (required), force_failover |
-| `get_billing_alert` | Cost Explorer GetCostAndUsage | time_period_start, time_period_end, granularity (DAILY/MONTHLY), metrics, group_by_service |
+| `create_ec2_instance` | EC2 RunInstances | `region`, `instance_type` (required); `security_group_rules`, `tags`, `key_name`, `subnet_id`, `associate_public_ip`, `ami_id`, `min_count`, `max_count` |
+| `restart_database` | RDS RebootDBInstance | `db_instance_identifier`, `region` (required); `force_failover` |
+| `get_billing_alert` | Cost Explorer GetCostAndUsage | `time_period_start`, `time_period_end`, `granularity`, `metrics`, `group_by_service` |
 
 ---
 
-## Safety Layer
+## Model Selection
 
-Every tool call is automatically checked before execution:
+`ARC_OPS_MODEL` accepts exactly two values, resolved identically across all interfaces:
 
-| Check | What it does |
-|-------|-------------|
-| Schema validation | Rejects invented parameters (e.g. `log_event`) |
-| Required fields | Blocks calls missing mandatory params |
-| Cost estimation | Shows monthly cost estimate before creating resources |
-| Disruptive action flag | Flags operations that cause downtime (e.g. DB restart) |
-| Policy enforcement | Blocks destructive operations in production |
+| Key | Base model | Default adapter |
+|-----|-----------|-----------------|
+| `7b` (default) | `Qwen/Qwen2.5-7B-Instruct` | `CodeSantiago/arcops` (public) |
+| `1.5b` | `Qwen/Qwen2.5-1.5B-Instruct` | **none** |
 
+There is **no public 1.5B adapter**. Selecting `1.5b` without an explicit adapter fails with a clear error — the project never invents a repo ID. To use a 1.5B fine-tune of your own:
+
+```bash
+export ARC_OPS_MODEL=1.5b
+export ARC_OPS_ADAPTER=your-org/your-1.5b-adapter   # required
+arcops "Create a t3.micro server"
 ```
-> Create a t3.micro server in us-east-1
 
--- Safety Check --
-~$8/mo (t3.micro)
-
-[ok] Created i-12345678
-```
+`arcops --light` is a shorthand for `ARC_OPS_MODEL=1.5b` and is subject to the same adapter requirement.
 
 ---
 
-## Model Training
+## Training & Evaluation
 
 ### Dataset
 
-- **10,854 synthetic examples** across 3 tools
-- Balanced field distributions (50/50 force_failover, 12% multi-metric, 15% multi-rule security groups)
-- Noise examples to prevent hallucination ("but also log the event" → ignored)
-- City-to-region mapping examples ("Sydney" → "ap-southeast-2")
-- Reproducible: `uv run python scripts/generate_dataset_v3.py`
+Generated deterministically (`SEED=42`) by `scripts/generate_dataset_v3.py`:
 
-### Training
+- **11,510 synthetic rows** across 3 tools and 12 regions, deduplicated by canonical `(prompt, tool name, parsed arguments)` to **3,555 unique examples**.
+- The v3 generator includes three "honest fixes": default sizes, city→region mapping, and relative-time billing.
+- **No train/test leakage**: duplicates are removed before the seeded split; split metadata reports size, unique rows, duplicates, seed, and train/test overlap.
+- `data/challenge_set.jsonl` (tracked) holds **64 manually authored, non-template prompts**: city names, ambiguous requests, noise phrases, Spanglish, unknown instance types, and read-only billing.
+- `data/training_dataset.jsonl` is **gitignored** — regenerate it locally with `python scripts/generate_dataset_v3.py`.
 
-```bash
-# Quick training (~3h, rank 16, 2 epochs)
-uv run python scripts/training/train.py --config scripts/training/quick_config.yaml
+### Evaluation protocol
 
-# Full training (~8h, rank 32, 4 epochs)
-bash scripts/training/run.sh
-```
+`scripts/training/eval.py` runs one of **four modes** and reports exact-match, tool-name, and field accuracy per run:
 
-### Results
+| Mode | Command | What it measures |
+|------|---------|------------------|
+| `standard` (default) | `eval.py --checkpoint checkpoints/final` | In-distribution: deduplicated 80/10/10 seeded split |
+| `template` | `... --eval-mode template --test-families ec2_ports,rds_failover` | Unseen phrasing: complete template families held out |
+| `unseen` | `... --eval-mode unseen --unseen region=ap-northeast-1,ca-central-1 --unseen port=6379` | Unseen values: holdout values appear only in test |
+| `challenge` | `... --eval-mode challenge` | Unseen language: the 64 manual prompts — the hardest test |
 
-| Metric | Value | What it means |
-|--------|-------|---------------|
-| Tool-name accuracy | 100% | Always picks the right AWS tool (EC2 vs RDS vs billing) |
-| Field accuracy | 100% | Every parameter correct (region, instance_type, force_failover, etc.) |
-| Exact-match accuracy | 100% | Full JSON output matches expected exactly |
+Every run is guarded by a **strict consistency gate**: `verify_split_consistency` refuses template/unseen evaluation unless the eval split matches the checkpoint's `checkpoints/dataset_metadata.json` (mode + seed + families/values). Reports are saved as `eval_report_<mode>.json` next to the adapter.
 
-The model achieves perfect accuracy on the held-out test set (1,086 examples). Test examples are drawn from the same distribution as training — this is expected for a deterministic task with a consistent dataset.
+Always report the mode name next to a score — "accuracy" without a mode is meaningless. The modes measure different things and must not be compared as one benchmark.
 
-**What matters more: generalization to unseen prompts.** The model handles:
-- Instance types not in training (`c6i.4xlarge`, `r5.2xlarge`, `t3.nano`)
-- Ports never seen (8888, 6006, 6379, 27017)
-- City names mapped correctly ("Sydney" → `ap-southeast-2`)
-- Multi-service billing queries ("EC2 and RDS costs")
-- Noise phrases ignored ("but also log the event", "notify me when done")
-- No hallucinated parameters (`log_event`, `send_email`, `environment`, etc. are all blocked)
+### Results (final, honest)
 
-The safety layer provides a final defense: any hallucinated parameter is rejected before execution.
+| Mode | n | Exact | Field | Tool |
+|------|---|-------|-------|------|
+| `standard` | 356 | **100%** (356/356) | — | — |
+| `unseen` (seed 42) | 352 | **100%** (352/352) | — | — |
+| `challenge` | 64 manual prompts | **79.69%** | **92.81%** | **98.44%** |
 
-**Training details:** 10,854 examples, 4 epochs, rank 32, LR 5e-5, ~8h on RTX 5070.
+Earlier published "100%" results were measured on an inflated split (identical examples in train and test). The pipeline now deduplicates before splitting and enforces the consistency gate, so these are the numbers to trust. Template-mode results are re-measured per checkpoint via the command above.
 
 ---
 
-## Model Variants
-
-| Model | Size | VRAM | Speed | Accuracy |
-|-------|------|------|-------|----------|
-| **7B (QLoRA)** | 15GB base + 323MB adapter | ~8.3GB | ~2s/inference | Best |
-| **1.5B (QLoRA)** | 3GB base + 80MB adapter | ~3GB | ~0.5s/inference | Good, runs on CPU |
-
-Both available on HuggingFace: [CodeSantiago/arcops](https://huggingface.co/CodeSantiago/arcops)
-
----
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Base model | Qwen2.5-7B-Instruct (Apache 2.0) |
-| Fine-tuning | PEFT + TRL + QLoRA (4-bit) |
-| Hardware | NVIDIA RTX 5070 12GB (Blackwell sm_120) |
-| Quantization | bitsandbytes 0.50.0 |
-| Backend | FastAPI (REST), Bottle (desktop UI) |
-| Desktop UI | pywebview (native Windows window) |
-| Terminal UI | Python curses / print-input |
-| AWS simulation | LocalStack |
-| Container | Docker |
-| Model hosting | HuggingFace Hub |
-| Package manager | uv |
-
----
-
-## Project Structure
+## Architecture
 
 ```
 ArcOps/
-├── app/
-│   ├── api.py            # FastAPI REST server
-│   ├── desktop.py        # Native Windows desktop app
-│   ├── exec.py           # NL → execution runner
-│   ├── safety.py         # Safety layer (validation, costs, policies)
-│   ├── tui.py            # Terminal UI dashboard
-│   └── index.html        # Web UI (optional)
+├── src/cloudops_fc/            # Installed package (cloudops-fc)
+│   ├── core.py                 # Shared engine: inference + AWS execution + safety
+│   ├── cli.py                  # `arcops` console command (installed entry point)
+│   ├── models.py               # Unified ARC_OPS_MODEL resolution (7b / 1.5b)
+│   ├── safety.py               # Canonical safety layer (validation/cost/policies)
+│   ├── py.typed                # PEP 561 marker
+│   └── schemas/                # Tool definitions (JSON Schema, packaged)
+├── app/                        # Repo tools (checkout only)
+│   ├── tui.py                  # Textual dashboard — pure presentation
+│   ├── api.py                  # FastAPI REST server (localhost default)
+│   ├── exec.py                 # NL → AWS CLI builder / LocalStack executor
+│   └── safety.py               # Compatibility shim → cloudops_fc.safety
 ├── scripts/
-│   ├── training/
-│   │   ├── train.py          # QLoRA training entrypoint
-│   │   ├── eval.py           # Evaluation script
-│   │   ├── pipeline_utils.py # Data formatting & metrics
-│   │   ├── train_config.py   # Pydantic config model
-│   │   ├── quick_config.yaml  # Quick training config (~3h)
-│   │   ├── config_1.5b.yaml  # Small model training config
-│   │   └── default_config.yaml # Production training config
-│   ├── mcp_server.py         # MCP protocol server
-│   ├── generate_dataset_v3.py # Dataset generator
-│   ├── stress_test.py        # Integration test suite
-│   ├── audit_dataset.py      # Dataset analysis tool
-│   └── test_safety.py        # Safety layer tests
-├── src/
-│   └── cloudops_fc/schemas/  # Tool definitions (JSON Schema)
-├── cloudops.py               # Main CLI entrypoint
-├── PROJECT.md                # Detailed project documentation
-├── JOURNEY.md                # Development journey & lessons learned
-└── .env.example              # Environment configuration template
+│   ├── generate_dataset_v3.py  # Deterministic dataset generator
+│   ├── mcp_server.py           # MCP protocol server
+│   └── training/               # train.py, eval.py, pipeline_utils.py,
+│                               # template_families.py, configs, run.sh
+├── data/
+│   ├── challenge_set.jsonl     # 64 manual generalization prompts (tracked)
+│   └── training_dataset.jsonl  # regenerated locally (gitignored)
+├── tests/                      # Non-GPU test suite (pytest)
+├── .env.example                # Environment configuration template
+└── .github/workflows/ci.yml    # CI: lint + non-GPU tests + package smoke test
 ```
+
+The CLI, TUI, API, MCP server, and `app/exec` all import from the same `cloudops_fc.core` engine — no duplicated logic.
 
 ---
 
-## Roadmap
+## Development
 
-- [x] 3 AWS tools (EC2, RDS, billing)
-- [x] Safety layer with cost estimation
-- [x] MCP server integration
-- [x] Desktop UI (native Windows)
-- [x] Terminal UI dashboard
-- [x] Docker deployment
-- [ ] Slack/Discord bot (approval workflows)
-- [ ] Multi-turn conversations (chat history)
-- [ ] Additional AWS services (S3, Lambda, IAM)
-- [ ] Model quantization (GGUF) for pure CPU inference
-- [ ] ONNX export for faster inference
+```bash
+# Install with test tooling
+pip install -e ".[dev]"
+
+# Run the non-GPU test suite
+pytest
+
+# Lint
+ruff check src/ cloudops.py app/ tests/ scripts/
+```
+
+CI (`.github/workflows/ci.yml`) runs on Python 3.12/3.13 without the ML stack: it lints, verifies the packaged JSON schemas, runs the full non-GPU test suite, and smoke-tests the installed `arcops` entry point.
+
+---
+
+## FAQ
+
+**Do I need a GPU?** The default 7B model needs ~12 GB VRAM (4-bit). `arcops --light` targets lighter hardware but requires your own 1.5B adapter.
+
+**Does it touch real AWS?** Not by default. Everything runs against LocalStack unless `ARC_OPS_REAL=1` is set — and real-AWS actions still require interactive confirmation.
+
+**Is output deterministic?** Yes — greedy decoding, same input → same tool call.
+
+**Why is the first call slow?** The model downloads and loads in 4-bit (~30 s once, cached afterward).
+
+**Can I train my own adapter?** Yes — see `scripts/training/`; training requires a NVIDIA GPU (Linux/WSL2 recommended).
+
+**Where is my data?** Nowhere else. Model, inference, and safety all run locally.
 
 ---
 

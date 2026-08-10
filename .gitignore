@@ -18,7 +18,8 @@ models/
 checkpoints/
 checkpoints-1.5b/
 datasets/
-data/
+data/*
+!data/challenge_set.jsonl
 offload/
 *.pt
 *.pth
@@ -52,6 +53,7 @@ scripts/test_from_hf.py
 scripts/test_lang.py
 scripts/test_mcp_func.py
 scripts/test_model.py
+scripts/test_novel.py
 scripts/test_prompts.py
 scripts/test_safety.py
 scripts/generate_dataset.py

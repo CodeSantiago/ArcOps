@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and test dependencies (no ML stack)
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Lint canonical source
+        run: ruff check src/ cloudops.py app/ tests/ scripts/
+
+      - name: Verify package-data schemas are installed
+        run: |
+          python -c "from cloudops_fc.schemas import load_schema; [load_schema(n) for n in ('create_ec2_instance', 'restart_database', 'get_billing_alert')]; print('package schemas OK')"
+
+      - name: Run non-GPU test suite
+        run: pytest -q
+
+      - name: Verify installed console entry point
+        run: |
+          arcops --help
+          arcops tools
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Smoke-install from wheel
+        run: |
+          pip install dist/*.whl
+          arcops --help
+          arcops tools
+          python -c "from cloudops_fc.schemas import load_schema; load_schema('create_ec2_instance'); print('wheel schemas OK')"

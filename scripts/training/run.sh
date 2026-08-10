@@ -16,13 +16,13 @@
 #   - git, rsync installed
 #
 # Environment variables:
-#   RSYNC_DEST   Target directory on WSL2 native fs (default: ~/fine_tuning_model)
+#   RSYNC_DEST   Target directory on WSL2 native fs (default: ~/.arcops/worktree)
 # ===========================================================================
 
 set -euo pipefail
 
 # ---- Configurable defaults ------------------------------------------------
-RSYNC_DEST="${RSYNC_DEST:-$HOME/fine_tuning_model}"
+RSYNC_DEST="${RSYNC_DEST:-$HOME/.arcops/worktree}"
 CONFIG="scripts/training/default_config.yaml"
 SMOKE_ONLY=false
 
