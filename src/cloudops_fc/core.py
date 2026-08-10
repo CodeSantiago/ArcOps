@@ -22,11 +22,11 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from cloudops_fc.models import ModelConfig, resolve_model_config
 from cloudops_fc.safety import check
