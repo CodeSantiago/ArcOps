@@ -239,7 +239,8 @@ def main() -> None:
 
     raw = args.tool_call_json
     if os.path.exists(raw):
-        raw = open(raw, encoding="utf-8").read()
+        with open(raw, encoding="utf-8-sig") as handle:
+            raw = handle.read()
 
     try:
         tc = json.loads(raw)

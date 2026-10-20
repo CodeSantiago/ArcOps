@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from importlib import resources
+from typing import Any, cast
 
 
-def load_schema(name: str) -> dict:
+def load_schema(name: str) -> dict[str, Any]:
     """Load a JSON Schema by its stem name (e.g. 'create_ec2_instance').
 
     Returns the parsed schema dict.
@@ -14,10 +15,10 @@ def load_schema(name: str) -> dict:
     """
     path = resources.files("cloudops_fc.schemas").joinpath(f"{name}.json")
     with path.open("rb") as f:
-        return json.loads(f.read().decode("utf-8"))
+        return cast(dict[str, Any], json.loads(f.read().decode("utf-8")))
 
 
-def validate_payload(schema: dict, payload: dict) -> list[str]:
+def validate_payload(schema: dict[str, Any], payload: dict[str, Any]) -> list[str]:
     """Validate a payload dict against a schema dict.
 
     Returns a list of error messages (empty list = valid).

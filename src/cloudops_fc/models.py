@@ -14,14 +14,22 @@ that does not exist.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TypedDict
 
 DEFAULT_MODEL_KEY = "7b"
 DEFAULT_ADAPTER = "CodeSantiago/arcops"
 
+
+class _ModelEntry(TypedDict):
+    name: str
+    adapter: str | None
+
+
 #: Base model ID per model key. ``adapter`` is the default adapter repo ID,
 #: or ``None`` when no public adapter exists for that key.
-_MODEL_REGISTRY: dict[str, dict[str, str | None]] = {
+_MODEL_REGISTRY: dict[str, _ModelEntry] = {
     "7b": {
         "name": "Qwen/Qwen2.5-7B-Instruct",
         "adapter": DEFAULT_ADAPTER,
@@ -60,7 +68,7 @@ class ModelConfig:
 def resolve_model_config(
     key: str | None = None,
     adapter_override: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> ModelConfig:
     """Resolve the effective model config from env vars and overrides.
 
@@ -74,27 +82,28 @@ def resolve_model_config(
         ValueError: Unknown model key.
         RuntimeError: ``1.5b`` selected without an explicit adapter override.
     """
-    env = env if env is not None else os.environ
-    key = str(key or env.get("ARC_OPS_MODEL", DEFAULT_MODEL_KEY)).strip().lower()
+    environment = env if env is not None else os.environ
+    key = str(key or environment.get("ARC_OPS_MODEL", DEFAULT_MODEL_KEY)).strip().lower()
     if key not in _MODEL_REGISTRY:
         raise ValueError(
             f"Unknown ARC_OPS_MODEL '{key}'. Supported values: "
             f"{', '.join(SUPPORTED_KEYS)}."
         )
-    adapter = adapter_override or env.get("ARC_OPS_ADAPTER")
+    entry = _MODEL_REGISTRY[key]
+    adapter = adapter_override or environment.get("ARC_OPS_ADAPTER")
     if adapter is None:
-        adapter = _MODEL_REGISTRY[key]["adapter"]
+        adapter = entry["adapter"]
     if adapter is None:
         # No public adapter exists for this key and none was provided.
         raise RuntimeError(
             f"No public adapter exists for model '{key}' "
-            f"(base model: {_MODEL_REGISTRY[key]['name']}). Set "
+            f"(base model: {entry['name']}). Set "
             "ARC_OPS_ADAPTER to the HuggingFace repo ID of your fine-tuned "
             "LoRA adapter to use this model."
         )
-    return ModelConfig(key=key, name=_MODEL_REGISTRY[key]["name"], adapter=adapter)
+    return ModelConfig(key=key, name=entry["name"], adapter=adapter)
 
 
-def model_name(key: str | None = None, env: dict[str, str] | None = None) -> str:
+def model_name(key: str | None = None, env: Mapping[str, str] | None = None) -> str:
     """Return the base model ID for a model key."""
     return resolve_model_config(key=key, env=env).name

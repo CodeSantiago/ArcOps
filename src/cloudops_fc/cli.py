@@ -44,8 +44,11 @@ __all__ = [
 def _configure_stdio() -> None:
     """Make stdout/stderr UTF-8 on Windows consoles (cp1252 can't encode →)."""
     for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, OSError):
             pass
 
@@ -68,11 +71,7 @@ EVAL_CASES: list[tuple[str, str, dict[str, Any]]] = [
 
 
 def _cmd_eval(model_cfg: ModelConfig) -> int:
-    """Run the quick accuracy evaluation over the built-in cases.
-
-    Each case runs inference exactly once; tool accuracy compares the
-    predicted tool name against the expected tool name.
-    """
+    """Run the quick accuracy evaluation over the built-in cases."""
     print("\n  ArcOps Quick Evaluation\n")
     exact = 0
     correct_tools = 0
@@ -86,6 +85,8 @@ def _cmd_eval(model_cfg: ModelConfig) -> int:
             return 1
         name = result.get("name")
         args = result.get("arguments", {})
+        if not isinstance(args, dict):
+            args = {}
         tool_ok = name == exp_tool
         correct_tools += 1 if tool_ok else 0
         field_ok = sum(1 for k, v in exp_args.items() if args.get(k) == v)
@@ -117,19 +118,15 @@ def _cmd_tools() -> int:
 
 
 def _cmd_tui() -> int:
-    """Launch the terminal dashboard (app.tui), importing it lazily."""
-    from pathlib import Path
-
-    # Make sure the repo root is importable so ``app`` resolves even when
-    # the TUI is launched from an installed console script outside the repo.
-    root = str(Path(__file__).resolve().parents[2])
-    if root not in sys.path:
-        sys.path.insert(0, root)
-
+    """Launch the terminal dashboard, importing it lazily."""
     try:
-        from app.tui import main as tui_main
+        from cloudops_fc.tui import main as tui_main
     except ImportError as exc:  # pragma: no cover - environment dependent
-        print(f"Error: cannot import the TUI: {exc}")
+        print(
+            "Error: the TUI requires the 'tui' extra.\n"
+            "Install it with:  pip install 'cloudops-fc[tui]'"
+        )
+        print(f"Details: {exc}")
         return 1
 
     tui_main()
@@ -149,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         print('  arcops --light "..."                 Use the 1.5B model')
         print("  arcops --eval                        Quick accuracy check")
         print("  arcops tools                         List supported tools")
-        print("  arcops tui                          Launch the terminal dashboard")
+        print("  arcops tui                           Launch the terminal dashboard")
         print("\n  Examples:")
         print('  arcops "Create a t3.micro server in us-east-1"')
         print('  arcops "How much did we spend this month?"')
@@ -194,16 +191,18 @@ def main(argv: list[str] | None = None) -> int:
 
     name = result.get("name", "")
     call_args = result.get("arguments", {})
+    if not isinstance(call_args, dict):
+        call_args = {}
     result_check = check(name, call_args)
 
     print(f"\n  > {prompt}")
     print(f"  => {json.dumps(result, ensure_ascii=False)}")
     if result_check.warnings or result_check.errors:
         print("\n  -- Safety --")
-        for w in result_check.warnings:
-            print(f"  {w}")
-        for e in result_check.errors:
-            print(f"  {e}")
+        for warning in result_check.warnings:
+            print(f"  {warning}")
+        for error in result_check.errors:
+            print(f"  {error}")
         if result_check.blocked:
             print("  Action BLOCKED")
     return 0

@@ -1,17 +1,21 @@
 """MCP Server — CloudOps Agent (fine-tuned Qwen2.5-7B + LocalStack).
 
-Exposes a tool that takes natural language and returns structured JSON
-tool calls via the fine-tuned QLoRA model. Integrates with LocalStack
-for end-to-end execution (no real AWS costs).
+Exposes ArcOps to MCP clients as two tools:
+``cloudops_plan`` (infer only) and ``cloudops_execute`` (infer + LocalStack).
+
+Inference and execution live in ``cloudops_fc.core``. The ML stack is
+imported lazily on the first tool call, so the server boots without it and
+returns a clear error if the extras are missing.
 
 Usage:
-    uv run python scripts/mcp_server.py           # start server
-    uv run python scripts/mcp_server.py --test     # run self-test
+    uv run --extra train python scripts/mcp_server.py
+    uv run --extra train python scripts/mcp_server.py --test
+    uv run --extra train python scripts/mcp_server.py --once "create a t3.micro"
 
 Configure in opencode.json:
     "mcp": {
-        "cloudops-agent": {
-            "command": ["uv", "run", "python", "scripts/mcp_server.py"],
+        "arcops": {
+            "command": ["uv", "run", "--extra", "train", "python", "scripts/mcp_server.py"],
             "type": "local"
         }
     }
@@ -22,185 +26,77 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import subprocess
 import sys
 from pathlib import Path
 
-# Add project root + src so both scripts.* and cloudops_fc.* resolve
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 for _p in (str(PROJECT_ROOT), str(PROJECT_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import torch  # noqa: E402
-from peft import PeftModel  # noqa: E402
-from transformers import (  # noqa: E402
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-)
-
+from cloudops_fc.core import REAL, execute_tool_call, infer  # noqa: E402
 from cloudops_fc.models import resolve_model_config  # noqa: E402
-from cloudops_fc.safety import check  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("cloudops-mcp")
 
-# Model selection is unified through the package registry. The adapter
-# defaults to a local checkpoint when present, otherwise ARC_OPS_ADAPTER.
-# Resolution happens lazily in load_model() so a misconfigured ARC_OPS_MODEL
-# fails with a clear message instead of crashing the server at import.
-ADAPTER_PATH = os.environ.get("ARC_OPS_ADAPTER", str(PROJECT_ROOT / "checkpoints" / "final"))
-
-# Singleton model (loaded once)
-_model = None
-_tokenizer = None
+MCP_PROTOCOL_VERSION = "2024-11-05"
 
 
-def load_model():
-    """Load the fine-tuned model (lazy singleton)."""
-    global _model, _tokenizer
-    if _model is not None:
-        return _model, _tokenizer
-
-    model_cfg = resolve_model_config()
-    adapter = model_cfg.require_adapter()
-    model_name = model_cfg.name
-
-    log.info("Loading 4-bit base model %s...", model_name)
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-    )
-    model = PeftModel.from_pretrained(model, adapter, offload_folder="offload")
-    model.eval()
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token = tokenizer.eos_token
-
-    _model, _tokenizer = model, tokenizer
-    log.info("Model loaded successfully")
-    return model, tokenizer
-
-
-def generate_tool_call(prompt: str) -> dict:
+def generate_tool_call(prompt: str) -> dict[str, Any]:
     """Convert natural language to a tool-call JSON dict."""
-    model, tokenizer = load_model()
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a CloudOps infrastructure assistant. "
-                "Output ONLY the JSON tool call. No explanations, no markdown."
-            ),
-        },
-        {"role": "user", "content": prompt},
-    ]
-
-    inputs = tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-    ).to(model.device)
-
-    with torch.no_grad():
-        outputs = model.generate(
-            inputs.input_ids,
-            max_new_tokens=256,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-
-    reply = tokenizer.decode(
-        outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
-    ).strip()
-
-    # Parse JSON from reply
     try:
-        return json.loads(reply)
-    except json.JSONDecodeError:
-        return {"error": "model returned invalid JSON", "raw": reply}
+        return infer(prompt, resolve_model_config())
+    except (RuntimeError, ValueError) as exc:
+        return {"error": str(exc)}
 
 
-def execute_on_localstack(tool_call: dict) -> dict:
-    """Execute the tool call against LocalStack (if running).
+def execute_on_localstack(tool_call: dict[str, Any]) -> dict[str, Any]:
+    """Execute a tool call against LocalStack (never real AWS).
 
-    The tool call is validated by the canonical safety module first:
-    unknown parameters and missing required identifiers are rejected instead
-    of silently defaulting (no ``test-db`` fallback).
+    Disruptive actions require an interactive approval channel that MCP does
+    not have, so they are refused rather than executed silently.
     """
-    name = tool_call.get("name", "")
-    args = tool_call.get("arguments", {})
-
-    safety = check(name, args, env="development")
-    if safety.blocked or safety.errors:
+    if REAL:
         return {
             "status": "blocked",
-            "errors": safety.errors,
-            "tool_call": tool_call,
+            "message": "MCP execution targets LocalStack only; unset ARC_OPS_REAL",
         }
 
-    # Map tool names to AWS CLI commands
-    aws_commands = {
-        "create_ec2_instance": [
-            "aws", "ec2", "run-instances",
-            "--region", args["region"],
-            "--instance-type", args["instance_type"],
-            "--endpoint-url", "http://localhost:4566",
-            "--no-cli-pager",
-        ],
-        "restart_database": [
-            "aws", "rds", "reboot-db-instance",
-            "--region", args["region"],
-            "--db-instance-identifier", args["db_instance_identifier"],
-            "--endpoint-url", "http://localhost:4566",
-            "--no-cli-pager",
-        ],
-        "get_billing_alert": None,  # LocalStack doesn't support Cost Explorer
-    }
+    name = tool_call.get("name", "")
+    args = tool_call.get("arguments", {})
+    if not isinstance(args, dict):
+        args = {}
 
-    cmd = aws_commands.get(name)
-    if cmd is None:
-        return {"status": "skipped", "reason": f"No LocalStack mapping for {name}"}
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        if result.returncode == 0:
-            return {"status": "ok", "aws_output": json.loads(result.stdout)}
-        else:
-            return {"status": "error", "aws_error": result.stderr}
-    except FileNotFoundError:
-        return {"status": "error", "reason": "AWS CLI not installed"}
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "reason": "timed out"}
-    except Exception as e:
-        return {"status": "error", "reason": str(e)}
+    status, message = execute_tool_call(
+        name,
+        args,
+        confirm_callable=None,
+        env="development",
+        verbose=False,
+    )
+    return {"status": status, "message": message}
 
 
-# ===========================================================================
-# MCP Server (stdin/stdout JSON-RPC)
-# ===========================================================================
-
-def handle_request(request: dict) -> dict:
-    """Handle a single JSON-RPC request."""
+def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
+    """Handle a single JSON-RPC request (None for notifications)."""
     method = request.get("method", "")
     req_id = request.get("id")
 
+    if method.startswith("notifications/"):
+        return None
+
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": req_id, "result": {
-            "protocolVersion": "0.1.0",
+            "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "arcops-mcp", "version": "0.1.0"},
         }}
 
-    elif method == "tools/list":
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+
+    if method == "tools/list":
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": [
             {
                 "name": "cloudops_plan",
@@ -250,45 +146,52 @@ def handle_request(request: dict) -> dict:
             },
         ]}}
 
-    elif method == "tools/call":
+    if method == "tools/call":
         tool_name = request.get("params", {}).get("name", "")
         arguments = request.get("params", {}).get("arguments", {})
         prompt = arguments.get("prompt", "")
 
+        if tool_name not in ("cloudops_plan", "cloudops_execute"):
+            return {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32602, "message": f"Unknown tool: {tool_name}"
+            }}
         if not prompt:
             return {"jsonrpc": "2.0", "id": req_id, "error": {
-                "code": -32000, "message": "Missing 'prompt' argument"
+                "code": -32602, "message": "Missing 'prompt' argument"
             }}
 
         try:
             tool_call = generate_tool_call(prompt)
-
+            is_error = "error" in tool_call
             if tool_name == "cloudops_execute" and arguments.get("execute", False):
                 execution = execute_on_localstack(tool_call)
+                is_error = is_error or execution.get("status") in (
+                    "error",
+                    "blocked",
+                    "cancelled",
+                )
                 result = {"tool_call": tool_call, "execution": execution}
             else:
                 result = {"tool_call": tool_call}
 
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [
+            payload: dict[str, Any] = {"content": [
                 {"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}
-            ]}}
-
-        except Exception as e:
-            log.error("Error processing request: %s", e)
+            ]}
+            if is_error:
+                payload["isError"] = True
+            return {"jsonrpc": "2.0", "id": req_id, "result": payload}
+        except Exception as exc:  # pragma: no cover - defensive
+            log.error("Error processing request: %s", exc)
             return {"jsonrpc": "2.0", "id": req_id, "error": {
-                "code": -32000, "message": str(e)
+                "code": -32000, "message": str(exc)
             }}
 
-    elif method == "notifications/initialized":
-        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
-
-    else:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {
-            "code": -32601, "message": f"Method not found: {method}"
-        }}
+    return {"jsonrpc": "2.0", "id": req_id, "error": {
+        "code": -32601, "message": f"Method not found: {method}"
+    }}
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="CloudOps Agent MCP Server")
     parser.add_argument("--test", action="store_true", help="Run self-test")
     parser.add_argument("--once", type=str, help="Single prompt: generate and exit")
@@ -301,10 +204,8 @@ def main():
         return
 
     if args.test:
-        # Quick test — no MCP, just generate and print
         logging.getLogger().setLevel(logging.WARNING)
         print(" CloudOps Agent self-test\n")
-        load_model()
         tests = [
             "Create a t3.micro EC2 server in us-east-1 with port 80",
             "Restart the production database",
@@ -316,7 +217,6 @@ def main():
             print(f"  => {json.dumps(result, ensure_ascii=False)}\n")
         return
 
-    # Run MCP server on stdin/stdout (model loads lazily on first tool call)
     log.info("CloudOps Agent MCP Server starting...")
 
     for line in sys.stdin:
@@ -325,10 +225,12 @@ def main():
             continue
         try:
             request = json.loads(line)
-            response = handle_request(request)
+        except json.JSONDecodeError as exc:
+            log.error("Invalid JSON-RPC: %s", exc)
+            continue
+        response = handle_request(request)
+        if response is not None:
             print(json.dumps(response), flush=True)
-        except json.JSONDecodeError as e:
-            log.error("Invalid JSON-RPC: %s", e)
 
 
 if __name__ == "__main__":

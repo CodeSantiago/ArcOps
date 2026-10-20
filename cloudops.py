@@ -6,8 +6,7 @@ Installed console command: ``arcops`` (see ``[project.scripts]`` in
 repo checkout without installing the package: it bootstraps ``src/`` onto
 ``sys.path`` so ``cloudops_fc`` resolves.
 
-``python cloudops.py tui`` launches the terminal dashboard instead of the
-CLI, mirroring the ``arcops tui`` subcommand in ``cloudops_fc.cli``.
+``python cloudops.py tui`` launches the terminal dashboard via the CLI.
 """
 
 from __future__ import annotations
@@ -21,14 +20,5 @@ if str(_SRC) not in sys.path:
 
 from cloudops_fc.cli import main  # noqa: E402
 
-
-def _run() -> int:
-    if sys.argv[1:] and sys.argv[1] == "tui":
-        from app.tui import main as tui_main
-        tui_main()
-        return 0
-    return main()
-
-
 if __name__ == "__main__":
-    raise SystemExit(_run())
+    raise SystemExit(main())

@@ -2,11 +2,12 @@
 
 Run locally (binds to 127.0.0.1 by default):
 
-    uvicorn api:app --host 127.0.0.1 --port 8080
+    pip install '.[api]'
+    uvicorn app.api:app --host 127.0.0.1 --port 8080
     # or:  python -m app.api
 
-The model stack (torch/transformers/peft) is imported lazily inside
-``load()`` so the module itself imports without the ML extras installed.
+Inference lives in ``cloudops_fc.core``; the ML stack is imported lazily so
+the module itself imports without the ML extras installed.
 
 Security defaults:
 
@@ -24,7 +25,9 @@ import json
 import logging
 import os
 import sys
-import tempfile
+import time
+import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -36,34 +39,51 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from cloudops_fc.core import MAX_NEW_TOKENS, infer, load_model  # noqa: E402
 from cloudops_fc.models import resolve_model_config  # noqa: E402
 from cloudops_fc.safety import check  # noqa: E402
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("arcops")
 
-app = FastAPI(title="ArcOps", version="0.1.0", description="NL → JSON tool calls for AWS")
-
-_OFFLOAD_DIR = os.getenv("ARC_OPS_OFFLOAD_DIR") or str(
-    Path(tempfile.gettempdir()) / "arcops-offload"
-)
-_HERE = Path(__file__).resolve().parent
-
-_model = None
-_tokenizer = None
-
 MAX_NEW_TOKENS_UPPER = 1024
+_HERE = Path(__file__).resolve().parent
 
 
 class PromptRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
-    max_tokens: int = Field(default=256, ge=1, le=MAX_NEW_TOKENS_UPPER)
+    max_tokens: int = Field(default=MAX_NEW_TOKENS, ge=1, le=MAX_NEW_TOKENS_UPPER)
 
 
 class ToolCallResponse(BaseModel):
-    tool_call: dict
+    tool_call: dict[str, Any]
     raw: str
-    safety: dict | None = None
+    safety: dict[str, Any] | None = None
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> Any:
+    log.info("ArcOps loading model (this may take ~60s)...")
+    try:
+        load_model(resolve_model_config())
+    except (RuntimeError, ValueError) as exc:
+        log.warning("Model not loaded at startup: %s", exc)
+    log.info("ArcOps ready → http://localhost:8080/docs")
+    yield
+
+
+app = FastAPI(
+    title="ArcOps",
+    version="0.1.0",
+    description="NL → JSON tool calls for AWS",
+    lifespan=lifespan,
+)
 
 
 def _require_api_key(x_api_key: str | None = Header(default=None)) -> None:
@@ -77,55 +97,8 @@ def _model_config() -> Any:
     """Resolve the model selection from ARC_OPS_MODEL/ARC_OPS_ADAPTER."""
     try:
         return resolve_model_config()
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-def load() -> tuple[Any, Any]:
-    """Lazily load the 4-bit base model + LoRA adapter (singleton)."""
-    global _model, _tokenizer
-    if _model is not None:
-        return _model, _tokenizer
-
-    try:
-        import torch
-        from peft import PeftModel
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-    except ImportError as exc:  # pragma: no cover - environment dependent
-        raise RuntimeError(
-            "Model inference requires the ML extras, which are not installed.\n"
-            "Install them with:  pip install 'cloudops-fc[train]'"
-        ) from exc
-
-    cfg = _model_config()
-    adapter = cfg.require_adapter()
-    log.info("Loading base model %s (4-bit)...", cfg.name)
-    bnb = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg.name, quantization_config=bnb, device_map="auto", torch_dtype=torch.bfloat16
-    )
-    log.info("Loading adapter from %s", adapter)
-    model = PeftModel.from_pretrained(model, adapter, offload_folder=_OFFLOAD_DIR)
-    model.eval()
-    tokenizer = AutoTokenizer.from_pretrained(cfg.name)
-    tokenizer.pad_token = tokenizer.eos_token
-    _model, _tokenizer = model, tokenizer
-    log.info("Model ready")
-    return model, tokenizer
-
-
-@app.on_event("startup")
-def startup() -> None:
-    log.info("ArcOps loading model (this may take ~60s)...")
-    try:
-        load()
-    except RuntimeError as exc:
-        log.warning("Model not loaded at startup: %s", exc)
-    log.info("ArcOps ready → http://localhost:8080/docs")
 
 
 @app.get("/")
@@ -139,100 +112,94 @@ def index() -> Any:
 @app.get("/health")
 def health() -> dict[str, str]:
     try:
-        cfg = _model_config()
+        cfg = resolve_model_config()
         return {"status": "ok", "model": cfg.name, "adapter": cfg.adapter or ""}
     except (ValueError, RuntimeError) as exc:
         return {"status": "error", "detail": str(exc)}
 
 
-def _predict(prompt: str, max_tokens: int) -> tuple[dict, str]:
-    """Run inference and return (parsed tool call, raw reply)."""
-    import torch
-
-    model, tokenizer = load()
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a CloudOps infrastructure assistant. "
-                "Output ONLY the JSON tool call. No explanations, no markdown."
-            ),
-        },
-        {"role": "user", "content": prompt},
-    ]
-    inputs = tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-    ).to(model.device)
-    with torch.no_grad():
-        outputs = model.generate(
-            inputs.input_ids,
-            max_new_tokens=max_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    raw = tokenizer.decode(
-        outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
-    ).strip()
+def _predict(prompt: str, max_tokens: int) -> dict[str, Any]:
+    """Run inference and return the parsed tool call."""
+    cfg = _model_config()
     try:
-        return json.loads(raw), raw
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=500, detail=f"Model returned invalid JSON: {raw}"
-        ) from exc
-
-
-@app.post("/predict", response_model=ToolCallResponse)
-def predict(
-    req: PromptRequest, _: None = Depends(_require_api_key)
-) -> ToolCallResponse:
-    try:
-        tool_call, raw = _predict(req.prompt, req.max_tokens)
+        return infer(prompt, cfg, max_new_tokens=max_tokens)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+
+def _validated(tool_call: dict[str, Any]) -> dict[str, Any]:
     name = tool_call.get("name", "")
     arguments = tool_call.get("arguments", {})
-    result = check(name, arguments)
-    if result.blocked:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "tool_call": tool_call,
-                "errors": result.errors,
-            },
-        )
-    return ToolCallResponse(
-        tool_call=tool_call, raw=raw, safety=result.to_dict()
-    )
-
-
-@app.post("/v1/chat/completions")
-def openai_compat(
-    req: dict, _: None = Depends(_require_api_key)
-) -> dict[str, Any]:
-    """OpenAI-compatible endpoint for MCP / opencode integration."""
-    messages = req.get("messages") or [{}]
-    prompt = messages[-1].get("content", "")
-    if not prompt:
-        raise HTTPException(status_code=400, detail="No prompt provided")
-    max_tokens = int(req.get("max_tokens") or 256)
-    max_tokens = max(1, min(max_tokens, MAX_NEW_TOKENS_UPPER))
-    try:
-        tool_call, _raw = _predict(prompt, max_tokens)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    name = tool_call.get("name", "")
-    arguments = tool_call.get("arguments", {})
+    if not isinstance(arguments, dict):
+        arguments = {}
     result = check(name, arguments)
     if result.blocked:
         raise HTTPException(
             status_code=400,
             detail={"tool_call": tool_call, "errors": result.errors},
         )
-    return {
-        "choices": [
-            {"message": {"content": json.dumps(tool_call, ensure_ascii=False)}}
+    return result.to_dict()
+
+
+@app.post("/predict", response_model=ToolCallResponse)
+def predict(req: PromptRequest, _: None = Depends(_require_api_key)) -> ToolCallResponse:
+    tool_call = _predict(req.prompt, req.max_tokens)
+    safety = _validated(tool_call)
+    return ToolCallResponse(
+        tool_call=tool_call,
+        raw=json.dumps(tool_call, ensure_ascii=False),
+        safety=safety,
+    )
+
+
+def _extract_prompt(messages: list[Any]) -> str:
+    if not messages:
+        return ""
+    content = messages[-1].get("content", "") if isinstance(messages[-1], dict) else ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
         ]
+        return "".join(parts)
+    return ""
+
+
+@app.post("/v1/chat/completions")
+def openai_compat(req: dict[str, Any], _: None = Depends(_require_api_key)) -> dict[str, Any]:
+    """OpenAI-compatible endpoint for MCP / opencode integration."""
+    prompt = _extract_prompt(req.get("messages") or [])
+    if not prompt:
+        raise HTTPException(status_code=400, detail="No prompt provided")
+
+    try:
+        max_tokens = int(req.get("max_tokens") or MAX_NEW_TOKENS)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="max_tokens must be an integer") from exc
+    max_tokens = max(1, min(max_tokens, MAX_NEW_TOKENS_UPPER))
+
+    tool_call = _predict(prompt, max_tokens)
+    _validated(tool_call)
+    cfg = resolve_model_config()
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": cfg.name,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps(tool_call, ensure_ascii=False),
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 

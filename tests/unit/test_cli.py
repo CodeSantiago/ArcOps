@@ -7,7 +7,7 @@ extras are not installed (clear error, exit code 1).
 
 from __future__ import annotations
 
-from cloudops_fc import cli, core
+from cloudops_fc import cli
 
 
 class TestCliMetadata:
@@ -19,6 +19,7 @@ class TestCliMetadata:
         assert code == 0
         assert "ArcOps" in out
         assert "--eval" in out
+        assert "tui" in out
 
     def test_help_flag(self, capsys) -> None:
         code = cli.main(["--help"])
@@ -49,8 +50,7 @@ class TestCliMetadata:
                 "Install them with:  pip install 'cloudops-fc[train]'"
             )
 
-        # The lazy ML runtime now lives in the shared engine (cloudops_fc.core).
-        monkeypatch.setattr(core, "_load_runtime", _no_runtime)
+        monkeypatch.setattr(cli, "infer", _no_runtime)
         code = cli.main(["--eval"])
         out = capsys.readouterr().out
         assert code == 1

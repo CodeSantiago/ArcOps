@@ -15,6 +15,7 @@ from cloudops_fc.safety import (
     estimate_cost,
     validate_schema,
 )
+from cloudops_fc.schemas import load_schema
 
 
 class TestSchemaValidation:
@@ -132,3 +133,10 @@ class TestSchemasExposed:
         assert r.requires_approval is False
         assert r.errors == []
         assert r.warnings == []
+
+    def test_hardcoded_schemas_match_packaged_json(self) -> None:
+        """The safety allowlist must not drift from the packaged JSON schemas."""
+        for tool_name, schema in TOOL_SCHEMAS.items():
+            packaged = load_schema(tool_name)
+            assert schema["allowed"] == set(packaged.get("properties", {}))
+            assert sorted(schema["required"]) == sorted(packaged.get("required", []))
