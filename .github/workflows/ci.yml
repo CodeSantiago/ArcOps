@@ -29,6 +29,15 @@ jobs:
       - name: Lint canonical source
         run: ruff check src/ cloudops.py app/ tests/ scripts/
 
+      - name: Type check canonical package
+        run: mypy src/cloudops_fc
+
+      - name: Smoke-import canonical modules
+        run: python -c "import cloudops_fc.cli, cloudops_fc.core, cloudops_fc.models, cloudops_fc.safety, cloudops_fc.schemas; print('imports OK')"
+
+      - name: Verify app tools import without the ML stack
+        run: python -m app.exec --help
+
       - name: Verify package-data schemas are installed
         run: |
           python -c "from cloudops_fc.schemas import load_schema; [load_schema(n) for n in ('create_ec2_instance', 'restart_database', 'get_billing_alert')]; print('package schemas OK')"
@@ -62,3 +71,4 @@ jobs:
           arcops --help
           arcops tools
           python -c "from cloudops_fc.schemas import load_schema; load_schema('create_ec2_instance'); print('wheel schemas OK')"
+          python -c "import importlib.util; assert importlib.util.find_spec('cloudops_fc.tui'); print('wheel tui module OK')"

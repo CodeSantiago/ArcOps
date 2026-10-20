@@ -36,7 +36,6 @@ offload/
 
 # Debug / one-off scripts (kept local, not pushed)
 app/index.html
-PROJECT.md
 scripts/add_noise.py
 scripts/analyze_eval.py
 scripts/audit_all_fields.py
