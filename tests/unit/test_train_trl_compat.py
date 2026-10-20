@@ -69,7 +69,10 @@ class TestInstalledTRLApi:
         trl = pytest.importorskip("trl")
         import inspect
 
-        from trl import SFTTrainer
+        try:
+            from trl import SFTTrainer
+        except (ImportError, OSError, RuntimeError) as exc:
+            pytest.skip(f"TRL cannot be imported in this environment: {exc}")
 
         params = inspect.signature(SFTTrainer.__init__).parameters
         assert "processing_class" in params, (

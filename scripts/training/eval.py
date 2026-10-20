@@ -29,10 +29,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-
-import torch
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from typing import Any
 
 # Add project root so scripts/training/ can resolve imports
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -172,8 +169,8 @@ def load_test_split(config: TrainingConfig) -> tuple[list[dict], dict]:
 
 def generate_tool_call(
     messages: list[dict],
-    model: AutoModelForCausalLM | PeftModel,
-    tokenizer: AutoTokenizer,
+    model: Any,
+    tokenizer: Any,
     max_new_tokens: int,
 ) -> str:
     """Generate a tool-call response for the conversation prefix.
@@ -181,6 +178,8 @@ def generate_tool_call(
     The assistant response is *excluded* from the prompt — the model
     must generate it.
     """
+    import torch
+
     conversation = serialize_tool_calls(messages)
     # Remove the last assistant message if present (we want the model to generate it)
     if conversation and conversation[-1]["role"] == "assistant":
@@ -353,10 +352,12 @@ def verify_split_consistency(
     args: argparse.Namespace,
     eval_meta: dict,
 ) -> None:
-    """Refuse template/unseen evaluation when training split does not match.
+    """Refuse evaluation when the split does not match the training split.
 
     Prevents the "evaluate examples the model already saw" leak that can make
-    template/unseen metrics misleadingly perfect.
+    template/unseen metrics misleadingly perfect. The effective seed is the
+    one recorded in the evaluation split metadata (``--seed`` when provided,
+    otherwise the config's ``data.seed``), not the raw CLI value.
     """
     if args.eval_mode == "challenge":
         return  # manual set is independent of training partition
@@ -371,19 +372,20 @@ def verify_split_consistency(
 
     train_mode = training_meta.get("mode") or training_meta.get("split_mode") or "standard"
     train_seed = training_meta.get("split_seed")
+    eval_seed = eval_meta.get("split_seed")
 
     if args.eval_mode != train_mode:
         raise ValueError(
             f"Evaluation split does not match training split: "
             f"model was trained with mode={train_mode!r} seed={train_seed}, "
-            f"but evaluation requested mode={args.eval_mode!r} seed={args.seed}. "
+            f"but evaluation requested mode={args.eval_mode!r} seed={eval_seed}. "
             f"Re-train with the matching split mode before running this evaluation."
         )
 
-    if train_seed is not None and args.seed != train_seed:
+    if train_seed is not None and eval_seed is not None and eval_seed != train_seed:
         raise ValueError(
             f"Seed mismatch: training used seed={train_seed}, "
-            f"evaluation requested seed={args.seed}."
+            f"evaluation split used seed={eval_seed}."
         )
 
     if args.eval_mode == "template":
@@ -407,8 +409,8 @@ def verify_split_consistency(
 
 def evaluate(
     test_examples: list[dict],
-    model: AutoModelForCausalLM | PeftModel,
-    tokenizer: AutoTokenizer,
+    model: Any,
+    tokenizer: Any,
     max_new_tokens: int,
     metadata: dict | None = None,
 ) -> dict:
@@ -573,6 +575,18 @@ def main(argv: list[str] | None = None) -> int:
     verify_split_consistency(training_meta, args, metadata)
 
     # 3. Load base model with 4-bit quantization
+    try:
+        import torch
+        from peft import PeftModel
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    except (ImportError, OSError) as exc:
+        log.error(
+            "Evaluation requires the ML extras. Install them with: "
+            "pip install 'cloudops-fc[train]'"
+        )
+        log.error("Details: %s", exc)
+        return 1
+
     log.info("Loading base model (4-bit)...")
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,

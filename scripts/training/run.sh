@@ -80,19 +80,18 @@ fi
 # ---- Training -------------------------------------------------------------
 echo "=== [4/5] Starting QLoRA training ==="
 uv run python scripts/training/train.py --config "$CONFIG"
-TRAIN_EXIT=$?
-
-if [[ $TRAIN_EXIT -ne 0 ]]; then
-    echo "ERROR: Training failed with exit code $TRAIN_EXIT"
-    exit $TRAIN_EXIT
-fi
 
 # ---- Evaluation -----------------------------------------------------------
 echo "=== [5/5] Running evaluation ==="
-uv run python scripts/training/eval.py --checkpoint "$RSYNC_DEST/checkpoints/final"
+OUTPUT_DIR=$(uv run python -c "from pathlib import Path; from scripts.training.train_config import TrainingConfig; print(TrainingConfig.from_yaml(Path('$CONFIG')).training.output_dir)")
+case "$OUTPUT_DIR" in
+    /*) CHECKPOINT="$OUTPUT_DIR/final" ;;
+    *)  CHECKPOINT="$RSYNC_DEST/${OUTPUT_DIR#./}/final" ;;
+esac
+uv run python scripts/training/eval.py --config "$CONFIG" --checkpoint "$CHECKPOINT"
 
 echo ""
 echo "=== Training pipeline complete ==="
 echo "  Config:      $CONFIG"
-echo "  Output:      $RSYNC_DEST/checkpoints/"
-echo "  Eval report: $RSYNC_DEST/checkpoints/eval_report.json"
+echo "  Output:      ${CHECKPOINT%/final}/"
+echo "  Eval report: ${CHECKPOINT%/final}/eval_report_standard.json"
