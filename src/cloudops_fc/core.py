@@ -354,14 +354,20 @@ def build_run_instances_cmd(
 
     if args.get("ami_id"):
         command += ["--image-id", str(args["ami_id"])]
+    elif not REAL:
+        command += [
+            "--image-id",
+            os.environ.get("ARC_OPS_DEFAULT_AMI", "ami-12345678"),
+        ]
+    else:
+        raise ValueError("ami_id is required for real AWS")
     if args.get("key_name"):
         command += ["--key-name", str(args["key_name"])]
     if args.get("subnet_id"):
         command += ["--subnet-id", str(args["subnet_id"])]
 
-    min_count = int(args.get("min_count") or 1)
-    max_count = int(args.get("max_count") or min_count)
-    command += ["--min-count", str(min_count), "--max-count", str(max_count)]
+    count = max(1, int(args.get("min_count") or 1))
+    command += ["--count", str(count)]
 
     if args.get("associate_public_ip") is True:
         command.append("--associate-public-ip-address")

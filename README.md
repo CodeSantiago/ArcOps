@@ -15,6 +15,22 @@ Tool call: {"name": "create_ec2_instance", "arguments": {
 Result: EC2 instance created with the requested inbound rule (~$8/mo)
 ```
 
+## Status (v1)
+
+| Metric | Value |
+|--------|-------|
+| Model | Qwen2.5-7B-Instruct + QLoRA adapter `CodeSantiago/arcops` (4-bit, local) |
+| Tools | 3: EC2, RDS, Billing |
+| Dataset | 10,854 raw → 3,555 unique; 64 challenge prompts; 0 schema-invalid rows |
+| Tool mix | EC2 6,362 / RDS 2,472 / Billing 2,020 |
+| Tests | 207 passed, 1 skipped |
+| Coverage | 34% overall (≈60% engine, TUI 0%); schemas 100%, models 98%, safety 62%, core 52%, CLI 48% |
+| Lint / types | `ruff` clean; `mypy --strict` clean across 7 source files |
+| Quick eval | 5 built-in cases, public adapter: tool 5/5, field 6/11 (54.5%), exact 2/5 (40%) |
+| End-to-end | EC2 create against LocalStack 3.0 on Windows + RTX 5070 |
+
+The quick eval is a five-case smoke test on in-distribution prompts, not a benchmark. Model accuracy is only meaningful with the correct split mode; see [Evaluation](#evaluation).
+
 ## Quick path
 
 Requirements: Python 3.12 or 3.13, an NVIDIA GPU with ~12 GB VRAM for the default 7B model, Docker for LocalStack, and the AWS CLI for execution.
@@ -28,6 +44,14 @@ Requirements: Python 3.12 or 3.13, an NVIDIA GPU with ~12 GB VRAM for the defaul
    ```
 
    The package is not published on PyPI yet. The base install (no PyTorch) still provides `arcops --help` and `arcops tools`.
+
+   On Windows, the default `torch` wheel is CPU-only. Replace it with the CUDA 13 build before running inference:
+
+   ```powershell
+   uv pip install --reinstall torch --index-url https://download.pytorch.org/whl/cu130
+   ```
+
+   CUDA 12.8+ is required for RTX 50-series cards (`sm_120`); the CUDA 13 wheel includes that support. Training is tested on Linux/WSL2.
 
 2. **Run a prompt**
 
@@ -88,9 +112,10 @@ One canonical module (`cloudops_fc.safety`) is used by the CLI, TUI, API, MCP se
 
 | Check | Behavior |
 |-------|----------|
-| Schema validation | Blocks parameters outside the tool schema |
+| Schema validation | Enforces the packaged JSON Schema (types, patterns, enums, extra keys) |
 | Required fields | Blocks missing mandatory parameters (no silent defaults) |
 | Unknown tools | Blocks tools outside the registry |
+| Supported EC2 types | Blocks instance types outside the priced/safety set |
 | Cost estimation | Reports monthly EC2 cost before creation |
 | Approval | Disruptive actions (DB restart) require confirmation |
 | Policy | Destructive actions are blocked in `production` |
@@ -98,9 +123,11 @@ One canonical module (`cloudops_fc.safety`) is used by the CLI, TUI, API, MCP se
 Execution details:
 
 - EC2 calls apply `security_group_rules` by creating a security group and authorizing each rule before `run-instances`.
-- `tags`, `ami_id`, `key_name`, `subnet_id`, `associate_public_ip`, `min_count`, and `max_count` are passed through.
+- `tags`, `ami_id`, `key_name`, `subnet_id`, `associate_public_ip`, and `min_count` are passed through; `min_count` maps to the AWS CLI `--count` (the CLI exposes one count, not a range).
+- LocalStack uses `ARC_OPS_DEFAULT_AMI` (default `ami-12345678`) when the model omits `ami_id`; real AWS requires an explicit `ami_id`.
 - RDS reboots pass `--force-failover` when requested.
 - `get_billing_alert` is read-only; Cost Explorer is not available in LocalStack.
+- LocalStack community 3.0 implements EC2; `restart_database` needs LocalStack Pro or real AWS.
 - Real AWS requires `ARC_OPS_REAL=1` plus an interactive confirmation. MCP execution is LocalStack-only and refuses disruptive actions because it has no approval channel.
 
 ## Supported tools
@@ -111,6 +138,8 @@ Execution details:
 | `restart_database` | RDS RebootDBInstance | `db_instance_identifier`, `region` (required); `force_failover` |
 | `get_billing_alert` | Cost Explorer GetCostAndUsage | `time_period_start`, `time_period_end`, `granularity`, `metrics`, `group_by_service` |
 
+The AWS CLI exposes a single instance count; `min_count` is used as `--count`. `max_count` is validated but not expressible as a range through this CLI call.
+
 ## Dataset
 
 The generator is deterministic (`SEED=42`):
@@ -119,8 +148,10 @@ The generator is deterministic (`SEED=42`):
 - Deduplication runs **before** the seeded 80/10/10 split: train 2,844 / val 355 / test 356. Train/test overlap is reported and is zero.
 - Every generator prompt maps to one of **15 template families**, which enables the strict family holdout.
 - `data/challenge_set.jsonl` contains **64 manually authored, non-template prompts**: cities, ambiguity, noise, Spanglish, unknown instance types, and read-only billing. It has zero overlap with the training prompts.
+- **Tool mix:** EC2 6,362 / RDS 2,472 / Billing 2,020.
+- **Schema audit:** all 10,854 rows validate against the packaged JSON Schemas (0 invalid rows).
 
-Regenerate the training data locally:
+The generated training set is intentionally gitignored; the 64-prompt challenge set is tracked. Regenerate the training data locally:
 
 ```bash
 python scripts/generate_dataset_v3.py
@@ -170,6 +201,8 @@ python scripts/training/train.py --config scripts/training/default_config.yaml \
 
 The consistency gate refuses an evaluation whose split mode or effective seed differs from the checkpoint's `dataset_metadata.json`. Reports are saved as `eval_report_<mode>.json` next to the adapter.
 
+**Quick eval (public adapter).** `arcops --eval` runs five built-in cases: tool accuracy 5/5, field accuracy 6/11 (54.5%), exact match 2/5 (40%). This is a smoke test, not a benchmark; use `eval.py` with the correct split mode for real numbers.
+
 **Results policy.** No checkpoint is shipped in this repository, and historical "100%" numbers were measured on a split that leaked duplicates. The current pipeline deduplicates before splitting and enforces the consistency gate. Run `eval.py` against your own adapter; do not treat old numbers in git history as verified.
 
 ## API
@@ -193,6 +226,8 @@ curl -s localhost:8080/predict \
   -d '{"prompt":"Create a t3.micro server in us-east-1"}' \
   -H "Content-Type: application/json"
 ```
+
+The image pins PyTorch 2.14.1 + CUDA 13.0 (RTX 50-series / `sm_120`). It is not built in CI; build it on a machine with Docker and enough disk.
 
 The container binds `0.0.0.0` because Docker port publishing requires it. Do not expose it publicly without `ARC_OPS_API_KEY`.
 
@@ -228,6 +263,7 @@ ArcOps/
 ├── app/                        # Repo-only tools
 │   ├── api.py                  # FastAPI server
 │   ├── exec.py                 # Plan / LocalStack executor
+│   ├── index.html              # Optional web UI served at /
 │   ├── tui.py                  # Compatibility shim → cloudops_fc.tui
 │   └── safety.py               # Compatibility shim → cloudops_fc.safety
 ├── scripts/
@@ -238,6 +274,7 @@ ArcOps/
 │   ├── challenge_set.jsonl     # 64 manual prompts (tracked)
 │   └── training_dataset.jsonl  # generated locally (gitignored)
 ├── tests/                      # Non-GPU pytest suite
+├── LICENSE                     # Apache 2.0
 └── .github/workflows/ci.yml    # Lint + mypy + tests + wheel smoke test
 ```
 
@@ -245,7 +282,8 @@ ArcOps/
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest -q
+pytest -q --cov=cloudops_fc --cov-report=term
 ruff check src/ cloudops.py app/ tests/ scripts/
 mypy src/cloudops_fc
 ```
@@ -257,11 +295,16 @@ CI runs on Python 3.12/3.13 without the ML stack: lint, mypy, module imports, `a
 - The dataset is English-only synthetic data; Spanish and multi-turn conversations are not covered.
 - No checkpoint is shipped; the public adapter is 7B only.
 - `get_billing_alert` is a read-only planning tool and does not execute Cost Explorer in LocalStack.
+- `restart_database` needs LocalStack Pro or real AWS; LocalStack community 3.0 does not implement RDS.
+- The TUI is manually/integration tested; it has no automated pytest coverage (the engine is covered).
+- The 10,854-row training dataset is generated locally and gitignored; the deterministic generator and the 64-prompt challenge set are tracked.
+- Windows GPU inference requires the CUDA 13 build of torch; the default PyPI wheel is CPU-only.
+- The Docker image is not built in CI; it pins PyTorch 2.14.1 + CUDA 13.0.
 - MCP execution never targets real AWS and refuses disruptive actions.
 - The API has no rate limiting; keep it on localhost or set `ARC_OPS_API_KEY`.
 
 ## License
 
-Apache 2.0
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 [Report a bug](https://github.com/CodeSantiago/ArcOps/issues) · [Contribute](https://github.com/CodeSantiago/ArcOps/pulls) · [HuggingFace adapter](https://huggingface.co/CodeSantiago/arcops)

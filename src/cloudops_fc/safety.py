@@ -23,6 +23,8 @@ import os
 import sys
 from typing import Any
 
+from cloudops_fc.schemas import load_schema, validate_payload
+
 # ── AWS pricing (hardcoded approximations, us-east-1 Linux On-Demand) ─────
 EC2_PRICING: dict[str, float] = {
     "t3.nano": 0.0052, "t3.micro": 0.0104, "t3.small": 0.0208,
@@ -140,6 +142,25 @@ def validate_schema(tool_name: str, arguments: dict[str, Any]) -> SafetyResult:
         result.warnings.append(
             "No instance type specified — using default (t3.micro)"
         )
+
+    if tool_name == "create_ec2_instance":
+        instance_type = arguments.get("instance_type")
+        if isinstance(instance_type, str) and instance_type not in EC2_PRICING:
+            result.errors.append(
+                f"Unknown instance_type '{instance_type}' — not in the supported "
+                "safety/pricing set"
+            )
+            result.blocked = True
+
+    try:
+        schema_document = load_schema(tool_name)
+    except FileNotFoundError:
+        result.errors.append(f"No JSON Schema found for tool: {tool_name}")
+        result.blocked = True
+    else:
+        for error in validate_payload(schema_document, arguments):
+            result.errors.append(f"{tool_name}: {error}")
+            result.blocked = True
 
     if result.errors:
         result.passed = False

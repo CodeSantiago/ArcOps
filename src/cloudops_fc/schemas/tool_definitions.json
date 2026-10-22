@@ -25,7 +25,7 @@
         },
         "instance_type": {
           "type": "string",
-          "pattern": "^[a-z][0-9]+\\.(micro|small|medium|large|xlarge|[0-9]+xlarge)$",
+          "pattern": "^[a-z][a-z0-9-]*\\.[a-z0-9]+$",
           "description": "The EC2 instance type (e.g. t3.micro, m5.large)"
         },
         "ami_id": {

@@ -559,7 +559,10 @@ class ArcOpsApp(App):
             )
             return
         # No modal: focus the search-panel input so the prompt is typed in place.
-        self.query_one("#search-input", Input).focus()
+        inp = self.query_one("#search-input", Input)
+        if self._awaiting_confirm is None:
+            inp.value = ""
+        inp.focus()
 
     def _on_prompt(self, prompt: str | None) -> None:
         if not prompt:
@@ -782,7 +785,10 @@ class ArcOpsApp(App):
             if r.returncode != 0:
                 run_cmd = [
                     "docker", "run", "-d", "--name", "localstack",
-                    "-p", "4566:4566", "localstack/localstack",
+                    "-p", "4566:4566",
+                    os.environ.get(
+                        "ARC_OPS_LOCALSTACK_IMAGE", "localstack/localstack:3.0"
+                    ),
                 ]
                 ls_token = os.environ.get("LOCALSTACK_AUTH_TOKEN")
                 if ls_token:

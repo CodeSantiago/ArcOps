@@ -29,6 +29,20 @@ class TestSchemaValidation:
         assert result.blocked is False
         assert result.errors == []
 
+    def test_c6i_instance_type_allowed(self) -> None:
+        result = validate_schema(
+            "create_ec2_instance", {"region": "us-east-1", "instance_type": "c6i.xlarge"}
+        )
+        assert result.blocked is False
+        assert result.errors == []
+
+    def test_unknown_instance_type_blocked(self) -> None:
+        result = validate_schema(
+            "create_ec2_instance", {"region": "us-east-1", "instance_type": "banana.large"}
+        )
+        assert result.blocked is True
+        assert any("instance_type" in e for e in result.errors)
+
     def test_unknown_parameter_blocked(self) -> None:
         result = validate_schema(
             "create_ec2_instance",

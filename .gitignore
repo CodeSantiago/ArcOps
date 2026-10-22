@@ -35,7 +35,6 @@ offload/
 .env/
 
 # Debug / one-off scripts (kept local, not pushed)
-app/index.html
 scripts/add_noise.py
 scripts/analyze_eval.py
 scripts/audit_all_fields.py
@@ -72,13 +71,16 @@ scripts/generate_dataset.py
 Thumbs.db
 .DS_Store
 
-# uv
-uv.lock
-
 # Coverage
 .coverage
 htmlcov/
 
+# Local tooling caches
+.atl/
+
 # Temporary
 tmp/
 temp/
+
+# Local migration archive (legacy ArcOps v1 docs/data)
+archive/

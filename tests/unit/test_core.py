@@ -13,7 +13,11 @@ from cloudops_fc import core
 def _ec2_call() -> dict:
     return {
         "name": "create_ec2_instance",
-        "arguments": {"region": "us-east-1", "instance_type": "t3.micro"},
+        "arguments": {
+            "region": "us-east-1",
+            "instance_type": "t3.micro",
+            "ami_id": "ami-123",
+        },
     }
 
 
@@ -159,14 +163,19 @@ class TestCommandBuilders:
         assert "ami-123" in command
         assert "--key-name" in command
         assert "--subnet-id" in command
-        assert command[command.index("--min-count") + 1] == "2"
-        assert command[command.index("--max-count") + 1] == "3"
+        assert command[command.index("--count") + 1] == "2"
         assert "--associate-public-ip-address" in command
         assert command[command.index("--security-group-ids") + 1] == "sg-1"
 
         tag_spec = command[command.index("--tag-specifications") + 1]
         assert '"Key":"Name"' in tag_spec
         assert '"Value":"web"' in tag_spec
+
+    def test_run_instances_defaults_localstack_ami(self) -> None:
+        command = core.build_run_instances_cmd(
+            {"region": "us-east-1", "instance_type": "t3.micro"}, None
+        )
+        assert command[command.index("--image-id") + 1] == "ami-12345678"
 
     def test_reboot_db_includes_force_failover(self) -> None:
         command = core.build_reboot_db_cmd({

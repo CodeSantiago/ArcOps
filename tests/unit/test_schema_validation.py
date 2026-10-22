@@ -79,6 +79,16 @@ class TestValidPayload:
         errors = validate_payload(schema, payload)
         assert errors == [], f"Expected no errors, got: {errors}"
 
+    def test_valid_ec2_instance_type_with_letter_suffix(
+        self, load_schema, validate_payload
+    ) -> None:
+        """S1: EC2 schema accepts c6i/t4g-style families, not only digit families."""
+        schema = load_schema("create_ec2_instance")
+        for instance_type in ("c6i.xlarge", "t4g.micro", "m7g.large"):
+            payload = {"region": "us-east-1", "instance_type": instance_type}
+            errors = validate_payload(schema, payload)
+            assert errors == [], f"{instance_type}: expected no errors, got: {errors}"
+
     def test_valid_ec2_security_group_rules(self, load_schema, validate_payload) -> None:
         """S8: EC2 schema accepts payload with valid security_group_rules."""
         schema = load_schema("create_ec2_instance")
