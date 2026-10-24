@@ -383,27 +383,12 @@ The commercial hypothesis is open-core: the local engine stays Apache 2.0;
 team audit, policy packs and a hosted control plane are the paid surface.
 Details and success metrics: [docs/ROADMAP.md](docs/ROADMAP.md).
 
----
-
-## Limitations and non-goals
-
-- English-only synthetic training data; Spanish and multi-turn conversations
-  are not covered.
-- No checkpoint is shipped; the public adapter is 7B only.
-- TUI has no automated pytest coverage; it is exercised manually against
-  LocalStack.
-- The 10,854-row training set is generated locally and gitignored; the
-  deterministic generator and the 64-prompt challenge set are tracked.
-- LocalStack community 3.0 supports EC2; RDS is Pro-only.
-- The Docker image is not built in CI; it pins PyTorch 2.14.1 + CUDA 13.0.
-- This is not a general chatbot, not an autonomous production agent, and not a
-  broad multi-cloud control plane.
 
 ---
 
 ## Docs
 
-- [One-pager for founders](docs/ONE_PAGER.md)
+
 - [Architecture](docs/ARCHITECTURE.md)
 - [Evaluation protocol and results policy](docs/EVALUATION.md)
 - [Roadmap](docs/ROADMAP.md)
