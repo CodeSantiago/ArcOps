@@ -93,13 +93,14 @@ class TestPolicies:
         )
         assert result.requires_approval is True
 
-    def test_restart_in_dev_no_approval(self) -> None:
+    def test_restart_in_dev_also_requires_approval(self) -> None:
+        """Approval is a property of the action, not the environment."""
         result = apply_policies(
             "restart_database",
             {"db_instance_identifier": "dev", "region": "us-east-1"},
             env="development",
         )
-        assert result.requires_approval is False
+        assert result.requires_approval is True
 
 
 class TestCombinedCheck:
@@ -128,6 +129,36 @@ class TestCombinedCheck:
         result = check("restart_database", {"region": "us-east-1"})
         assert result.blocked is True
         assert not result.to_dict()["passed"]
+
+    def test_non_object_arguments_are_blocked(self) -> None:
+        result = check("create_ec2_instance", ["not", "an", "object"])  # type: ignore[arg-type]
+        assert result.blocked is True
+        assert result.errors == ["Arguments must be a JSON object"]
+
+    def test_non_string_tool_name_is_blocked(self) -> None:
+        result = check({"name": "nope"}, {})  # type: ignore[arg-type]
+        assert result.blocked is True
+        assert "Unknown tool" in result.errors[0]
+
+
+class TestMalformedCostInputs:
+    """Untrusted model output must never crash the cost estimator."""
+
+    def test_non_numeric_min_count(self) -> None:
+        result = estimate_cost(
+            "create_ec2_instance",
+            {"instance_type": "t3.micro", "min_count": "two"},  # type: ignore[dict-item]
+        )
+        assert result.estimated_cost > 0
+        assert "x1" in result.warnings[0]
+
+    def test_unhashable_instance_type(self) -> None:
+        result = estimate_cost(
+            "create_ec2_instance",
+            {"instance_type": ["t3.micro"]},  # type: ignore[dict-item]
+        )
+        assert result.estimated_cost == 0.0
+        assert "Price not found" in result.warnings[0]
 
 
 class TestSchemasExposed:

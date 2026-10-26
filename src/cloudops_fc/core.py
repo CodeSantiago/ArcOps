@@ -18,6 +18,7 @@ duplicated inference or AWS logic.
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -28,7 +29,7 @@ import uuid
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -48,28 +49,40 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 REAL = os.environ.get("ARC_OPS_REAL", "") == "1"
 LOCAL = os.environ.get("LOCALSTACK_URL", "http://localhost:4566")
-# LocalStack accepts any access key/secret pair; keep them injectable for CI
-ENV = {
-    **os.environ,
-    "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
-    "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
-}
 AWS_EXE = shutil.which("aws") or "aws"
-AWS_BASE = [AWS_EXE, "--region", os.environ.get("AWS_REGION", "us-east-1")]
 
-if not REAL:
-    AWS_BASE += ["--endpoint-url", LOCAL]
+
+def _aws_base() -> list[str]:
+    """Build the AWS CLI prefix, reading region/endpoint at call time."""
+    base = [AWS_EXE, "--region", os.environ.get("AWS_REGION", "us-east-1")]
+    if not REAL:
+        base += ["--endpoint-url", os.environ.get("LOCALSTACK_URL", LOCAL)]
+    return base
+
+
+def _aws_env() -> dict[str, str]:
+    """Return the subprocess environment.
+
+    LocalStack accepts any key/secret pair, so fake ones are injected only
+    in local mode. Real mode inherits the environment untouched so the AWS
+    CLI credential chain (profile, SSO, instance role) keeps working.
+    """
+    env = dict(os.environ)
+    if not REAL:
+        env.setdefault("AWS_ACCESS_KEY_ID", "test")
+        env.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+    return env
 
 
 def aws(args: list[str]) -> Any:
     """Run an AWS CLI call and return parsed JSON, or None on failure."""
     try:
         r = subprocess.run(
-            AWS_BASE + args,
+            _aws_base() + args,
             capture_output=True,
             text=True,
             timeout=30,
-            env=ENV,
+            env=_aws_env(),
             cwd=PROJECT_ROOT,
         )
         if r.returncode == 0:
@@ -83,9 +96,10 @@ def aws(args: list[str]) -> Any:
 
 def ls_check() -> bool:
     """Return True when LocalStack's health endpoint answers 200."""
+    local = os.environ.get("LOCALSTACK_URL", LOCAL)
     for _ in range(5):  # 5 retries, 1s apart
         try:
-            with urlopen(f"{LOCAL}/_localstack/health", timeout=5) as response:
+            with urlopen(f"{local}/_localstack/health", timeout=5) as response:
                 if response.status == 200:
                     return True
         except (OSError, URLError, ValueError):
@@ -312,14 +326,7 @@ def _execute_tool_call(name: str, args: dict[str, Any]) -> tuple[str, str]:
             instance_id = result["Instances"][0].get("InstanceId", "?")
             return "ok", f"Created {instance_id}"
         if group_id:
-            aws([
-                "ec2",
-                "delete-security-group",
-                "--region",
-                str(args["region"]),
-                "--group-id",
-                group_id,
-            ])
+            _delete_security_group(str(args["region"]), group_id)
         return "error", "AWS command failed — LocalStack may be down"
 
     if name == "restart_database":
@@ -409,7 +416,20 @@ def build_reboot_db_cmd(args: dict[str, Any]) -> list[str]:
     return command
 
 
+def _delete_security_group(region: str, group_id: str) -> None:
+    """Best-effort cleanup for a security group ArcOps created."""
+    aws(["ec2", "delete-security-group", "--region", region, "--group-id", group_id])
+
+
 def _create_security_group(args: dict[str, Any], rules: list[Any]) -> str | None:
+    # Validate the rule shape BEFORE creating anything so an invalid model
+    # payload cannot leave an orphan security group behind.
+    for rule in rules:
+        if not isinstance(rule, dict):
+            return None
+        if rule.get("port") is None and str(rule.get("protocol", "tcp")) != "icmp":
+            return None
+
     region = str(args["region"])
     name = f"arcops-sg-{uuid.uuid4().hex[:8]}"
     created = aws([
@@ -427,14 +447,10 @@ def _create_security_group(args: dict[str, Any], rules: list[Any]) -> str | None
 
     group_id = str(created["GroupId"])
     for rule in rules:
-        if not isinstance(rule, dict):
-            return None
         protocol = str(rule.get("protocol", "tcp"))
         port = rule.get("port")
         cidr = str(rule.get("cidr", "0.0.0.0/0"))
         if port is None:
-            if protocol != "icmp":
-                return None
             port = -1
         command = [
             "ec2",
@@ -451,7 +467,7 @@ def _create_security_group(args: dict[str, Any], rules: list[Any]) -> str | None
             cidr,
         ]
         if aws(command) is None:
-            aws(["ec2", "delete-security-group", "--region", region, "--group-id", group_id])
+            _delete_security_group(region, group_id)
             return None
     return group_id
 
@@ -524,12 +540,14 @@ def _offload_dir() -> str:
 
 _model: Any = None
 _tokenizer: Any = None
+_runtime_key: tuple[str, str, str | None] | None = None
 
 
 def _load_runtime(model_cfg: ModelConfig) -> tuple[Any, Any]:
     """Lazily import torch/transformers/peft and load the quantized model."""
-    global _model, _tokenizer
-    if _model is not None:
+    global _model, _tokenizer, _runtime_key
+    key = (model_cfg.key, model_cfg.name, model_cfg.adapter)
+    if _model is not None and _runtime_key == key:
         return _model, _tokenizer
 
     try:
@@ -541,6 +559,16 @@ def _load_runtime(model_cfg: ModelConfig) -> tuple[Any, Any]:
             "Model inference requires the ML extras, which are not installed.\n"
             "Install them with:  pip install 'cloudops-fc[train]'"
         ) from exc
+
+    # Release a previously cached model before loading a different one; two
+    # 7B models in 4-bit do not fit on the target GPU.
+    if _model is not None:
+        _model = None
+        _tokenizer = None
+        _runtime_key = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     adapter = model_cfg.require_adapter()
     print(f"* Loading {model_cfg.key} model (first time ~30s)...")
@@ -559,13 +587,25 @@ def _load_runtime(model_cfg: ModelConfig) -> tuple[Any, Any]:
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(model_cfg.name)
     tokenizer.pad_token = tokenizer.eos_token
-    _model, _tokenizer = model, tokenizer
+    _model, _tokenizer, _runtime_key = model, tokenizer, key
     return model, tokenizer
 
 
 def load_model(model_cfg: ModelConfig | None = None) -> tuple[Any, Any]:
     """Load (or return the cached) model and tokenizer."""
     return _load_runtime(model_cfg or resolve_model_config())
+
+
+def _parse_model_reply(reply: str) -> dict[str, Any]:
+    """Parse model text into a tool-call dict, rejecting non-object JSON."""
+    try:
+        parsed = json.loads(reply)
+    except json.JSONDecodeError:
+        return {"error": "invalid JSON", "raw": reply}
+    if not isinstance(parsed, dict):
+        # The model is untrusted: lists, strings and numbers are not tool calls.
+        return {"error": "Model output is not a JSON object", "raw": reply}
+    return parsed
 
 
 def infer(
@@ -597,7 +637,4 @@ def infer(
     reply = tokenizer.decode(
         outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
     ).strip()
-    try:
-        return cast(dict[str, Any], json.loads(reply))
-    except json.JSONDecodeError:
-        return {"error": "invalid JSON", "raw": reply}
+    return _parse_model_reply(reply)

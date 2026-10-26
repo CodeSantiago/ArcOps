@@ -34,6 +34,53 @@ def _ec2_call_with_rules() -> dict:
     }
 
 
+class TestParseModelReply:
+    """Model output is untrusted: only JSON objects are tool calls."""
+
+    def test_plain_object_parses(self) -> None:
+        parsed = core._parse_model_reply('{"name": "x", "arguments": {}}')
+        assert parsed == {"name": "x", "arguments": {}}
+
+    def test_json_list_is_rejected(self) -> None:
+        parsed = core._parse_model_reply('["create_ec2_instance"]')
+        assert parsed["error"] == "Model output is not a JSON object"
+        assert parsed["raw"] == '["create_ec2_instance"]'
+
+    def test_invalid_json_is_rejected(self) -> None:
+        parsed = core._parse_model_reply("not json")
+        assert parsed["error"] == "invalid JSON"
+
+
+class TestAwsEnvironment:
+    """Fake LocalStack credentials must never leak into real-AWS mode."""
+
+    def test_local_mode_injects_fake_credentials(self, monkeypatch) -> None:
+        monkeypatch.setattr(core, "REAL", False)
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        env = core._aws_env()
+        assert env["AWS_ACCESS_KEY_ID"] == "test"
+        assert env["AWS_SECRET_ACCESS_KEY"] == "test"
+
+    def test_real_mode_keeps_the_credential_chain(self, monkeypatch) -> None:
+        monkeypatch.setattr(core, "REAL", True)
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        env = core._aws_env()
+        assert "AWS_ACCESS_KEY_ID" not in env
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+class TestSecurityGroupCleanup:
+    """Invalid rules must be rejected before any security group is created."""
+
+    def test_invalid_rule_does_not_create_group(self, monkeypatch) -> None:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(core, "aws", lambda args: calls.append(args) or {})
+        assert core._create_security_group({"region": "us-east-1"}, [{"protocol": "tcp"}]) is None
+        assert calls == []
+
+
 class TestCoreCreate:
     """create() must safety-check before executing."""
 

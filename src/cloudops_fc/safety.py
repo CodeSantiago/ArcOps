@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any
+from typing import Any, cast
 
 from cloudops_fc.schemas import load_schema, validate_payload
 
@@ -111,6 +111,8 @@ class SafetyResult:
 
 
 def _schema_for(tool_name: str) -> dict[str, Any] | None:
+    if not isinstance(tool_name, str):
+        return None
     return TOOL_SCHEMAS.get(tool_name)
 
 
@@ -137,11 +139,6 @@ def validate_schema(tool_name: str, arguments: dict[str, Any]) -> SafetyResult:
         if key not in arguments or arguments[key] is None:
             result.errors.append(f"Missing required parameter: {key}")
             result.blocked = True
-
-    if tool_name == "create_ec2_instance" and not arguments.get("instance_type"):
-        result.warnings.append(
-            "No instance type specified — using default (t3.micro)"
-        )
 
     if tool_name == "create_ec2_instance":
         instance_type = arguments.get("instance_type")
@@ -170,21 +167,30 @@ def validate_schema(tool_name: str, arguments: dict[str, Any]) -> SafetyResult:
 def estimate_cost(tool_name: str, arguments: dict[str, Any]) -> SafetyResult:
     """Estimate the monthly cost of the requested action."""
     result = SafetyResult()
+    if not isinstance(arguments, dict):
+        result.warnings.append("Cannot estimate cost: arguments are not an object")
+        return result
 
     if tool_name == "create_ec2_instance":
-        inst = arguments.get("instance_type", "t3.micro")
-        count = arguments.get("min_count", 1)
-        price = EC2_PRICING.get(inst)
-        if price:
-            monthly = price * HOURS_PER_MONTH * count
-            result.estimated_cost = monthly
+        inst = arguments.get("instance_type")
+        price = EC2_PRICING.get(inst) if isinstance(inst, str) else None
+        if price is None:
             result.warnings.append(
-                f"Estimated cost: ~${monthly:.0f}/mo ({inst} x{count})"
+                f"Price not found for {inst!r} — check AWS pricing"
             )
-        else:
-            result.warnings.append(
-                f"Price not found for {inst} — check AWS pricing"
-            )
+            return result
+
+        # Arguments are untrusted model output: a non-numeric count must not
+        # crash the safety layer with a TypeError.
+        try:
+            count = max(1, int(arguments.get("min_count") or 1))
+        except (TypeError, ValueError):
+            count = 1
+        monthly = price * HOURS_PER_MONTH * count
+        result.estimated_cost = monthly
+        result.warnings.append(
+            f"Estimated cost: ~${monthly:.0f}/mo ({inst} x{count})"
+        )
     elif tool_name == "restart_database":
         result.warnings.append("No additional cost for restart (same-hour billing)")
     elif tool_name == "get_billing_alert":
@@ -209,7 +215,9 @@ def apply_policies(
             f"{env} environment"
         )
 
-    if schema.get("disruptive") and env == "production":
+    if schema.get("disruptive"):
+        # Approval is a property of the action, not the environment: a DB
+        # restart needs an explicit confirmation even against LocalStack.
         result.warnings.append(
             f"{tool_name} will cause downtime. Ensure a maintenance window."
         )
@@ -222,6 +230,13 @@ def check(
     tool_name: str, arguments: dict[str, Any], env: str = "production"
 ) -> SafetyResult:
     """Run all safety checks and return the combined result."""
+    if not isinstance(arguments, dict):
+        result = SafetyResult()
+        result.passed = False
+        result.blocked = True
+        result.errors.append("Arguments must be a JSON object")
+        return result
+
     results = [
         validate_schema(tool_name, arguments),
         estimate_cost(tool_name, arguments),
@@ -268,9 +283,14 @@ def main() -> None:
     except json.JSONDecodeError:
         print("Invalid JSON")
         sys.exit(2)
+    if not isinstance(tc, dict):
+        print("Invalid tool call: expected a JSON object")
+        sys.exit(2)
 
-    tool_name = tc.get("name", tc.get("tool", ""))
-    arguments = tc.get("arguments", tc.get("parameters", {}))
+    tool_name = str(tc.get("name") or tc.get("tool") or "")
+    # ``check`` rejects non-object arguments at runtime; the cast only tells
+    # the type checker that the JSON payload is intentionally untrusted.
+    arguments = cast(dict[str, Any], tc.get("arguments", tc.get("parameters", {})))
 
     result = check(tool_name, arguments, args.env)
 
