@@ -18,7 +18,6 @@ random.seed(SEED)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "data", "training_dataset.jsonl")
-TOOLS_PATH = os.path.join(ROOT, "src", "cloudops_fc", "schemas", "tool_definitions.json")
 
 SYSTEM = (
     "You are a CloudOps infrastructure assistant. "
@@ -121,7 +120,7 @@ for _ in range(3000):
     ex["messages"][1]["content"] = prompt
     ec2_basic_examples.append(ex)
 
-# ── EC2 — With ports (600) ─────────────────────────────────────────────
+# ── EC2 — With ports (1000) ────────────────────────────────────────────
 
 ec2_port_prompts = [
     "Create a {adj} {size} server in {region} with port {port} open",
@@ -170,7 +169,7 @@ for _ in range(800):
     ex["messages"][1]["content"] = prompt
     ec2_full_examples.append(ex)
 
-# ── RDS — Basic (900) ──────────────────────────────────────────────────
+# ── RDS — Basic (2000) ─────────────────────────────────────────────────
 
 rds_prompts = [
     "Restart the {db} database in {region}",
@@ -449,7 +448,6 @@ multi_prompts = [
 for length in [2, 3, 4]:
     for _ in range(50):
         ms = random.sample(all_metrics, min(length, len(all_metrics)))
-        connector = " and " if len(ms) == 2 else ", ".join(ms[:-1]) + ", and " + ms[-1]
         names = " and ".join(ms) if len(ms) <= 2 else ", ".join(ms[:-1]) + f", and {ms[-1]}"
         tmpl = random.choice(multi_prompts)
         prompt = tmpl.format(names=names)
@@ -612,11 +610,15 @@ all_examples = (
 
 random.shuffle(all_examples)
 
-# Ensure no None prompts
-for ex in all_examples:
-    if ex["messages"][1]["content"] is None:
-        print("ERROR: None prompt found, skipping")
-        all_examples.remove(ex)
+# Ensure no None prompts (build a new list; never mutate while iterating)
+missing_prompts = sum(
+    1 for ex in all_examples if ex["messages"][1]["content"] is None
+)
+if missing_prompts:
+    print(f"ERROR: {missing_prompts} example(s) without a prompt were dropped")
+    all_examples = [
+        ex for ex in all_examples if ex["messages"][1]["content"] is not None
+    ]
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 with open(OUT, "w", encoding="utf-8") as f:

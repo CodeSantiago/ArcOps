@@ -11,6 +11,7 @@ and saves the adapter weights to the configured output directory.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -100,7 +101,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "Split seed for template/unseen modes. Defaults to the config's "
+            "Split seed for every split mode. Defaults to the config's "
             "data.seed. Must match the seed used during evaluation."
         ),
     )
@@ -146,7 +147,11 @@ def load_and_split_dataset(
     split_seed = seed if seed is not None else config.data.seed
 
     if split_mode == "standard":
-        splits, metadata = build_splits(config.data.train_file, config.data.seed)
+        splits, metadata = build_splits(
+            config.data.train_file,
+            split_seed,
+            holdout_ratio=config.data.val_split,
+        )
     elif split_mode == "template":
         if not test_families:
             raise ValueError(
@@ -163,6 +168,12 @@ def load_and_split_dataset(
             metadata["val_size"],
             ",".join(metadata["test_families"]),
         )
+        if metadata.get("unknown_count"):
+            log.warning(
+                "%d example(s) matched no known template family and were "
+                "excluded from every split.",
+                metadata["unknown_count"],
+            )
     elif split_mode == "unseen":
         if not unseen:
             raise ValueError(
@@ -301,8 +312,6 @@ def main(argv: list[str] | None = None) -> int:
 
     # Persist dataset-integrity metadata next to the training output so
     # evaluation reports can include it (see eval.py).
-    import json as _json
-
     dataset_metadata["mode"] = args.split_mode
     if args.split_mode == "template":
         dataset_metadata["test_families"] = (
@@ -314,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
 
     meta_path = output_dir / "dataset_metadata.json"
     meta_path.write_text(
-        _json.dumps(dataset_metadata, indent=2, ensure_ascii=False),
+        json.dumps(dataset_metadata, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     log.info("Dataset integrity metadata saved to %s", meta_path)
@@ -355,18 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     pad_token_id = tokenizer.pad_token_id
 
     def _format(example: dict) -> dict:
-        messages_raw = example["messages"]
-        if isinstance(messages_raw[0], list):
-            keys = ["role", "content"]
-            messages = [dict(zip(keys, m[:2])) for m in messages_raw]
-            for i, m in enumerate(messages_raw):
-                if len(m) > 2 and m[2] is not None:
-                    messages[i]["tool_calls"] = m[2]
-        else:
-            messages = messages_raw
-        messages = serialize_tool_calls(messages)
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-        return {"text": text}
+        return {"text": formatting_func(example, tokenizer)}
 
     dataset = dataset.map(_format, remove_columns=dataset["train"].column_names)
 
@@ -407,15 +405,14 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Starting training...")
     trainer.train()
 
-    # 9. Save LoRA adapter only
+    # 10. Save LoRA adapter only
     adapter_path = output_dir / "final"
     trainer.save_model(str(adapter_path))
     log.info("Adapter saved to %s", adapter_path)
 
-    # Save training metrics
+    # 11. Save training metrics
     log_path = output_dir / "training_metrics.json"
     if trainer.state.log_history:
-        import json
         log_path.write_text(
             json.dumps(trainer.state.log_history, indent=2, default=str),
             encoding="utf-8",

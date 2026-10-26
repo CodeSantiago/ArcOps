@@ -291,6 +291,15 @@ class TestMalformedPayloads:
         assert any("region" in e or "Additional properties" in e for e in errors)
 
 
+class TestRegionConsistency:
+    """Every region enum MUST match the shared regions.json list."""
+
+    def test_tool_schemas_share_the_same_regions(self, load_schema) -> None:
+        regions = load_schema("regions")["enum"]
+        assert load_schema("create_ec2_instance")["properties"]["region"]["enum"] == regions
+        assert load_schema("restart_database")["properties"]["region"]["enum"] == regions
+
+
 class TestToolDefinitions:
     """R1-R4: tool_definitions.json follows OpenAI function-calling format."""
 

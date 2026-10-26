@@ -71,8 +71,12 @@ FAMILY_PROBES: dict[str, str] = {
     "billing_daily": "Show me daily AWS costs from 2026-07-01 to 2026-07-14",
     "granularity_daily": "Show daily costs from 2026-07-01 to 2026-07-14",
     "billing_metrics": "Show me UnblendedCost and BlendedCost for this month",
+    "billing_relative": "Show me daily EC2 costs for past 7 days",
     "noise_ec2": "Create a t3.micro server in us-east-1, also make sure it's secure",
     "noise_rds": "Restart prod-db-01 in us-east-1, but also log the event",
+    "default_ec2": "I need a server",
+    "default_rds": "Restart the database",
+    "city_alias": "Create a t3.medium server in San Francisco",
 }
 
 

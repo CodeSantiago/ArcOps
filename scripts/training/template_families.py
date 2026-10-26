@@ -59,9 +59,46 @@ _NOISE_RDS_PHRASES = (
     "please confirm before executing",
 )
 
+# The generator's default-value prompts (no size/region mentioned) and its
+# city -> region alias prompts. Kept in sync with generate_dataset_v3.py.
+_DEFAULT_EC2_PROMPTS = (
+    "I need a server",
+    "Just a server please",
+    "Give me a machine",
+    "Launch a default server",
+    "Set up a basic server",
+    "Create an instance for me",
+    "I need a virtual machine",
+    "Give me a standard server",
+)
+_DEFAULT_RDS_PROMPTS = (
+    "Restart the database",
+    "Reboot the db",
+    "Restart the primary database",
+    "The database is down, restart it",
+    "Reboot the main database",
+)
+_CITY_NAMES = (
+    "California",
+    "San Francisco",
+    "Los Angeles",
+    "Oregon",
+    "Seattle",
+    "Portland",
+    "Sydney",
+    "Melbourne",
+)
+_DAY_RANGE_LABELS = ("this week", "past 7 days", "past 30 days", "last 2 weeks")
+_MONTH_RANGE_LABELS = (
+    "this quarter",
+    "3 months ago",
+    "past 3 months",
+    "last 6 months",
+)
 
-def _noise_alternation(phrases: tuple[str, ...]) -> str:
-    return "|".join(re.escape(phrase) for phrase in phrases)
+
+def _alternation(values: tuple[str, ...]) -> str:
+    return "|".join(re.escape(value) for value in values)
 
 
 FAMILY_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
@@ -70,17 +107,17 @@ FAMILY_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
         "noise_ec2",
         (
             rf"^Create a [a-z0-9.-]+ server in [a-z0-9-]+, "
-            rf"(?:{_noise_alternation(_NOISE_EC2_PHRASES)})$",
+            rf"(?:{_alternation(_NOISE_EC2_PHRASES)})$",
             rf"^Launch a [a-z0-9.-]+ in [a-z0-9-]+ with port \d+ open, "
-            rf"(?:{_noise_alternation(_NOISE_EC2_PHRASES)})$",
+            rf"(?:{_alternation(_NOISE_EC2_PHRASES)})$",
         ),
     ),
     (
         "noise_rds",
         (
-            rf"^Restart [a-z0-9-]+ in [a-z0-9-]+, (?:{_noise_alternation(_NOISE_RDS_PHRASES)})$",
+            rf"^Restart [a-z0-9-]+ in [a-z0-9-]+, (?:{_alternation(_NOISE_RDS_PHRASES)})$",
             rf"^Restart [a-z0-9-]+ in [a-z0-9-]+ with failover, "
-            rf"(?:{_noise_alternation(_NOISE_RDS_PHRASES)})$",
+            rf"(?:{_alternation(_NOISE_RDS_PHRASES)})$",
         ),
     ),
     # EC2 families (multi-port / full combos before single-feature families).
@@ -133,6 +170,19 @@ FAMILY_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
             r"^Provision a [a-z0-9.-]+ EC2 in [a-z0-9-]+$",
         ),
     ),
+    (
+        "default_ec2",
+        tuple(rf"^{re.escape(prompt)}$" for prompt in _DEFAULT_EC2_PROMPTS),
+    ),
+    (
+        "city_alias",
+        (
+            r"^(?:Create a [a-z0-9.-]+ server|Launch a [a-z0-9.-]+ instance"
+            r"|Spin up a [a-z0-9.-]+|I need a [a-z0-9.-]+ server) in "
+            rf"(?:{_alternation(_CITY_NAMES)})$",
+            rf"^Restart the database in (?:{_alternation(_CITY_NAMES)})$",
+        ),
+    ),
     # RDS families (failover phrasings before the plain restart family).
     (
         "rds_failover",
@@ -153,6 +203,10 @@ FAMILY_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
             r"^Restart [a-z0-9-]+ in [a-z0-9-]+$",
             r"^The [a-z0-9-]+ database is down, restart it in [a-z0-9-]+$",
         ),
+    ),
+    (
+        "default_rds",
+        tuple(rf"^{re.escape(prompt)}$" for prompt in _DEFAULT_RDS_PROMPTS),
     ),
     # Billing families.
     (
@@ -200,6 +254,15 @@ FAMILY_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
             r"^Show daily costs from \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}$",
             r"^I need a day-by-day breakdown from \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}$",
             r"^Give me the daily AWS spend between \d{4}-\d{2}-\d{2} and \d{4}-\d{2}-\d{2}$",
+        ),
+    ),
+    (
+        "billing_relative",
+        (
+            r"^Show me daily [A-Za-z0-9]+ costs for "
+            rf"(?:{_alternation(_DAY_RANGE_LABELS)})$",
+            r"^What did we spend on [A-Za-z0-9]+ "
+            rf"(?:{_alternation(_MONTH_RANGE_LABELS)})\?$",
         ),
     ),
 ]

@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelConfig(BaseModel):
     """HuggingFace model loading configuration."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(..., min_length=1, description="HF model ID or path")
     load_in_4bit: bool = True
@@ -21,6 +23,8 @@ class ModelConfig(BaseModel):
 
 class LoraConfig(BaseModel):
     """LoRA adapter hyperparameters."""
+
+    model_config = ConfigDict(extra="forbid")
 
     r: int = Field(default=16, gt=0, description="LoRA rank")
     lora_alpha: int = Field(default=32, gt=0, description="LoRA alpha scaling")
@@ -33,6 +37,8 @@ class LoraConfig(BaseModel):
 
 class TrainingArgs(BaseModel):
     """Training hyperparameters and runtime configuration."""
+
+    model_config = ConfigDict(extra="forbid")
 
     per_device_train_batch_size: int = Field(default=1, gt=0)
     per_device_eval_batch_size: int = Field(default=1, gt=0)
@@ -67,6 +73,8 @@ class TrainingArgs(BaseModel):
 class DataConfig(BaseModel):
     """Dataset configuration."""
 
+    model_config = ConfigDict(extra="forbid")
+
     train_file: str = Field(..., min_length=1, description="Path to training data JSONL")
     val_split: float = Field(default=0.2, ge=0.0, le=1.0, description="Validation split ratio")
     seed: int = Field(default=42, description="Random seed")
@@ -74,6 +82,8 @@ class DataConfig(BaseModel):
 
 class TrainingConfig(BaseModel):
     """Top-level training configuration, composed of sub-configs."""
+
+    model_config = ConfigDict(extra="forbid")
 
     model: ModelConfig
     lora: LoraConfig
@@ -93,6 +103,7 @@ class TrainingConfig(BaseModel):
         Raises:
             FileNotFoundError: If the YAML file does not exist.
             ValidationError: If the YAML content fails model validation.
+            ValueError: If the YAML root is not a mapping of sections.
             yaml.YAMLError: If the YAML is malformed.
         """
         if not path.is_file():
@@ -102,14 +113,10 @@ class TrainingConfig(BaseModel):
         try:
             return cls(**data)
         except TypeError as exc:
-            # Wrap unexpected top-level keys as validation errors
-            raise ValidationError.from_exception_data(
-                title="TrainingConfig",
-                line_errors=[{
-                    "loc": ("_unknown",),
-                    "msg": str(exc),
-                    "type": "value_error.extra",
-                }],
+            # A YAML document that is not a mapping cannot be a config;
+            # unknown keys already raise ValidationError via extra="forbid".
+            raise ValueError(
+                f"Config must be a mapping of sections, got {type(data).__name__}"
             ) from exc
 
     def to_yaml(self, path: Path) -> None:

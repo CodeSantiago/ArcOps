@@ -132,15 +132,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "Split seed for template/unseen modes. Defaults to the config's "
+            "Split seed for every eval mode. Defaults to the config's "
             "data.seed. Must match the seed used during training."
         ),
     )
     return parser.parse_args(argv)
 
 
-def load_test_split(config: TrainingConfig) -> tuple[list[dict], dict]:
-    """Load the test split (10% holdout) from the training dataset.
+def load_test_split(
+    config: TrainingConfig, seed: int | None = None
+) -> tuple[list[dict], dict]:
+    """Load the test split from the training dataset.
 
     Uses the exact same deduplication + seeded split path as train.py
     (``pipeline_utils.build_splits``), so the test partition is identical to
@@ -150,7 +152,11 @@ def load_test_split(config: TrainingConfig) -> tuple[list[dict], dict]:
     size, unique rows, duplicate count, split seed, train/test overlap, and
     whether duplicate leakage was detected.
     """
-    splits, metadata = build_splits(config.data.train_file, config.data.seed)
+    splits, metadata = build_splits(
+        config.data.train_file,
+        seed if seed is not None else config.data.seed,
+        holdout_ratio=config.data.val_split,
+    )
     log.info(
         "Dataset integrity: size=%d unique=%d duplicates=%d",
         metadata["dataset_size"],
@@ -234,7 +240,7 @@ def load_evaluation_set(
     Raises ``ValueError`` when required mode arguments are missing.
     """
     if args.eval_mode == "standard":
-        examples, meta = load_test_split(config)
+        examples, meta = load_test_split(config, args.seed)
         meta["mode"] = "standard"
         return examples, meta
 
@@ -257,6 +263,12 @@ def load_evaluation_set(
             metadata["val_size"],
             ",".join(metadata["test_families"]),
         )
+        if metadata.get("unknown_count"):
+            log.warning(
+                "%d example(s) matched no known template family and were "
+                "excluded from every split.",
+                metadata["unknown_count"],
+            )
         return list(splits["test"]), metadata
 
     if args.eval_mode == "unseen":

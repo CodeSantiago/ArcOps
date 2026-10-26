@@ -11,8 +11,12 @@ These cover the train/test leakage fixes:
 
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 
+from cloudops_fc.core import SYSTEM_PROMPT
+from cloudops_fc.schemas import load_schema
 from scripts.training.pipeline_utils import (
     build_completion_labels,
     build_splits,
@@ -20,6 +24,30 @@ from scripts.training.pipeline_utils import (
     deduplicate_examples,
     split_examples,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+GENERATOR = PROJECT_ROOT / "scripts" / "generate_dataset_v3.py"
+
+
+def _generator_literal(name: str) -> object:
+    """Read a module-level literal without executing the generator."""
+    tree = ast.parse(GENERATOR.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in {GENERATOR}")
+
+
+class TestGeneratorConsistency:
+    """Training data must describe the same contract as the runtime."""
+
+    def test_system_prompt_matches_core(self) -> None:
+        assert _generator_literal("SYSTEM") == SYSTEM_PROMPT
+
+    def test_regions_match_packaged_schema(self) -> None:
+        assert _generator_literal("REGIONS") == load_schema("regions")["enum"]
 
 # <|im_start|>assistant marker as fake token ids (deterministic for tests)
 MARKER = [1, 2, 3]
