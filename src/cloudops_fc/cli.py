@@ -205,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {error}")
         if result_check.blocked:
             print("  Action BLOCKED")
+        elif result_check.requires_approval:
+            print("  Approval required before execution")
     return 0
 
 

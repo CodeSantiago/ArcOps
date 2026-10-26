@@ -56,6 +56,7 @@ from cloudops_fc.core import (
     ls_check,
     tag_it,
 )
+from cloudops_fc.models import resolve_model_config
 
 LS_START_TIME: float | None = None  # When LocalStack was started (by this TUI)
 
@@ -383,10 +384,12 @@ class ArcOpsApp(App):
 
     @staticmethod
     def _model_info() -> str:
-        """Model line for the left panel — env/presentational only."""
-        key = os.environ.get("ARC_OPS_MODEL", "7b")
-        adapter = os.environ.get("ARC_OPS_ADAPTER", "CodeSantiago/arcops")
-        return f"Model: {key} (Qwen2.5)\nAdapter: {adapter}"
+        """Model line for the left panel, resolved like every other interface."""
+        try:
+            cfg = resolve_model_config()
+        except (ValueError, RuntimeError) as exc:
+            return f"Model: unresolved\n{exc}"
+        return f"Model: {cfg.key} ({cfg.name.rsplit('/', 1)[-1]})\nAdapter: {cfg.adapter}"
 
     def _focus_resources(self) -> None:
         """Return keyboard focus to the resource table (safe when unmounted)."""
@@ -423,6 +426,15 @@ class ArcOpsApp(App):
             pass
 
     def _update_ls_status(self, ls_on: bool, uptime: int | None = None) -> None:
+        if REAL:
+            self._set_status("Target: REAL AWS", kind="error")
+            try:
+                self.query_one("#ls-badge", Static).update(
+                    f"[{C_ERROR}]●[/] REAL AWS"
+                )
+            except NoMatches:
+                pass
+            return
         if ls_on:
             up = uptime if uptime is not None else _ls_uptime()
             up = up if up is not None else 0
@@ -433,8 +445,9 @@ class ArcOpsApp(App):
             badge = f"[{C_ACCENT}]●[/] RECENTLY STOPPED"
             kind, msg = "warn", "LocalStack: RECENTLY STOPPED"
         else:
-            badge = f"[{C_ERROR}]●[/] STOPPED — press [l] to launch"
-            kind, msg = "error", "LocalStack: STOPPED — press [l] to launch"
+            hint = escape("press [l] to launch")
+            badge = f"[{C_ERROR}]●[/] STOPPED — {hint}"
+            kind, msg = "error", f"LocalStack: STOPPED — {hint}"
         self._set_status(msg, kind=kind)
         try:
             self.query_one("#ls-badge", Static).update(badge)
@@ -459,9 +472,12 @@ class ArcOpsApp(App):
         self.call_from_thread(self._render, ls_on, items, uptime)
 
     def _render(self, ls_on: bool, items: list[dict], uptime: int | None = None) -> None:
+        global LS_START_TIME
         self._ls_on = ls_on
         if ls_on:
             self._last_known_up = time.time()
+        else:
+            LS_START_TIME = None
         try:
             table = self.query_one("#resources", DataTable)
         except NoMatches:
@@ -553,7 +569,7 @@ class ArcOpsApp(App):
             return
         if not self._ls_on and not REAL:
             self.notify(
-                "LocalStack is not running. Press [l] to launch.",
+                "LocalStack is not running. Press \\[l] to launch.",
                 severity="warning",
                 timeout=6,
             )
@@ -564,28 +580,20 @@ class ArcOpsApp(App):
             inp.value = ""
         inp.focus()
 
-    def _on_prompt(self, prompt: str | None) -> None:
-        if not prompt:
-            return
-        self._start_long_op()
-        self._set_status("Loading model (first time ~30s)...", kind="busy")
-        self._log_result("Loading model (first time ~30s)...", kind="busy")
-        self._create_worker(prompt)
-
     @on(Input.Submitted, "#search-input")
     def _on_search_submit(self, event: Input.Submitted) -> None:
         """Enter in the search panel: answers a pending confirmation, or runs create."""
-        value = (event.value or "").strip().lower()
+        text = (event.value or "").strip()
         event.input.value = ""
         if self._awaiting_confirm is not None:
             waiter = self._awaiting_confirm
             if not waiter.resolved:
-                waiter.ok = value in ("y", "yes")
+                waiter.ok = text.lower() in ("y", "yes")
                 waiter.resolved = True
                 waiter.event.set()
             self._focus_resources()
             return
-        prompt = value
+        prompt = text
         self._focus_resources()
         if not prompt:
             return
@@ -598,7 +606,7 @@ class ArcOpsApp(App):
             return
         if not self._ls_on and not REAL:
             self.notify(
-                "LocalStack is not running. Press [l] to launch.",
+                "LocalStack is not running. Press \\[l] to launch.",
                 severity="warning",
                 timeout=6,
             )
@@ -756,16 +764,9 @@ class ArcOpsApp(App):
                 text=True,
                 timeout=10,
             )
-            h = subprocess.run(
-                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                 "http://localhost:4566/_localstack/health"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
+            health = "health OK" if ls_check() else "health unreachable"
             msg = (
-                f"LocalStack container: {r.stdout.strip() or 'not found'} | "
-                f"Health: {h.stdout.strip() or 'no response'}"
+                f"LocalStack container: {r.stdout.strip() or 'not found'} | {health}"
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             msg = f"Diagnostics failed: {exc}"
@@ -808,6 +809,7 @@ class ArcOpsApp(App):
                 self.call_from_thread(self._finish_op)
                 return
             spin = ["[•]", "[•>]", "[•>•]", "[>•>]"]
+            started = False
             for i in range(40):
                 self.call_from_thread(
                     self._set_status, f"Booting LocalStack... {spin[i % 4]}", kind="busy"
@@ -815,7 +817,15 @@ class ArcOpsApp(App):
                 time.sleep(1)
                 if ls_check():
                     LS_START_TIME = time.time()
+                    started = True
                     break
+            if not started:
+                message = "LocalStack did not become healthy within 40s."
+                self.call_from_thread(
+                    self.notify, message, severity="error", timeout=8
+                )
+                self.call_from_thread(self._log_result, message, kind="error")
+                return
             self.call_from_thread(
                 self.notify, "LocalStack started!", severity="information", timeout=5
             )
@@ -848,6 +858,7 @@ class ArcOpsApp(App):
 
     @work(thread=True, exclusive=True)
     def _stop_worker(self) -> None:
+        global LS_START_TIME
         try:
             r = subprocess.run(
                 ["docker", "stop", "localstack"],
@@ -856,6 +867,7 @@ class ArcOpsApp(App):
                 timeout=30,
             )
             if r.returncode == 0:
+                LS_START_TIME = None
                 self.call_from_thread(
                     self.notify,
                     "LocalStack stopped.",
