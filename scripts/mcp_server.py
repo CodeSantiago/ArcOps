@@ -81,8 +81,20 @@ def execute_on_localstack(tool_call: dict[str, Any]) -> dict[str, Any]:
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
     """Handle a single JSON-RPC request (None for notifications)."""
+    if not isinstance(request, dict):
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid Request"},
+        }
     method = request.get("method", "")
     req_id = request.get("id")
+    if not isinstance(method, str):
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32600, "message": "Invalid Request"},
+        }
 
     if method.startswith("notifications/"):
         return None
@@ -148,17 +160,30 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
         ]}}
 
     if method == "tools/call":
-        tool_name = request.get("params", {}).get("name", "")
-        arguments = request.get("params", {}).get("arguments", {})
+        params = request.get("params") or {}
+        if not isinstance(params, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": "Invalid params"},
+            }
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": "Invalid params"},
+            }
         prompt = arguments.get("prompt", "")
 
         if tool_name not in ("cloudops_plan", "cloudops_execute"):
             return {"jsonrpc": "2.0", "id": req_id, "error": {
                 "code": -32602, "message": f"Unknown tool: {tool_name}"
             }}
-        if not prompt:
+        if not isinstance(prompt, str) or not prompt.strip():
             return {"jsonrpc": "2.0", "id": req_id, "error": {
-                "code": -32602, "message": "Missing 'prompt' argument"
+                "code": -32602, "message": "Missing or invalid 'prompt' argument"
             }}
 
         try:

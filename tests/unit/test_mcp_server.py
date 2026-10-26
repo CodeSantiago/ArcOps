@@ -72,6 +72,21 @@ class TestMcpProtocol:
         assert response is not None
         assert response["error"]["code"] == -32601
 
+    def test_non_object_request_is_rejected(self) -> None:
+        response = mcp_server.handle_request(["not", "an", "object"])  # type: ignore[arg-type]
+        assert response is not None
+        assert response["error"]["code"] == -32600
+
+    def test_non_object_arguments_are_rejected(self) -> None:
+        response = mcp_server.handle_request({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {"name": "cloudops_plan", "arguments": ["nope"]},
+        })
+        assert response is not None
+        assert response["error"]["code"] == -32602
+
     def test_inference_error_marks_tool_result_as_error(
         self, monkeypatch
     ) -> None:
@@ -89,3 +104,17 @@ class TestMcpProtocol:
         })
         assert response is not None
         assert response["result"].get("isError") is True
+
+    def test_disruptive_execution_is_refused_without_approval(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(mcp_server, "REAL", False)
+        result = mcp_server.execute_on_localstack({
+            "name": "restart_database",
+            "arguments": {
+                "db_instance_identifier": "prod-db",
+                "region": "us-east-1",
+            },
+        })
+        assert result["status"] == "cancelled"
+        assert "Confirmation required" in result["message"]
