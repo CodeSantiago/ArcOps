@@ -83,7 +83,7 @@
   <div class="header">
     <span class="status"></span>
     <span class="status-label" id="status">Connecting...</span>
-    <span class="model-name">Qwen2.5-7B + LoRA</span>
+    <span class="model-name" id="model-name">Local model</span>
   </div>
 
   <div class="example-chips">
@@ -110,10 +110,19 @@ function fill(text) {
   document.getElementById('input').value = text;
 }
 
+function esc(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function addMsg(role, content) {
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  div.innerHTML = role === 'user' ? content : syntaxHighlight(content);
+  div.innerHTML = role === 'user' ? esc(content) : syntaxHighlight(content);
   const meta = document.createElement('div');
   meta.className = 'meta';
   meta.textContent = new Date().toLocaleTimeString();
@@ -127,7 +136,7 @@ function syntaxHighlight(json) {
     const obj = typeof json === 'string' ? JSON.parse(json) : json;
     const name = obj?.tool_call?.name || obj?.name || '';
     const pretty = JSON.stringify(obj.tool_call || obj, null, 2);
-    const nameHtml = name ? `<div class="tool-name">⚡ ${name}</div>` : '';
+    const nameHtml = name ? `<div class="tool-name">⚡ ${esc(name)}</div>` : '';
     const highlighted = pretty.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
       .replace(/"([^"]+)":/g, '<span class="json-key">"$1"</span>:')
       .replace(/: "([^"]*)"/g, ': <span class="json-string">"$1"</span>')
@@ -136,7 +145,7 @@ function syntaxHighlight(json) {
       .replace(/: (null)/g, ': <span class="json-null">$1</span>');
     return nameHtml + '<pre style="margin:4px 0 0;font:inherit">' + highlighted + '</pre>';
   } catch {
-    return '<pre style="margin:0;font:inherit">' + json + '</pre>';
+    return '<pre style="margin:0;font:inherit">' + esc(json) + '</pre>';
   }
 }
 
@@ -164,7 +173,7 @@ async function send() {
     const result = data.tool_call || data;
     addMsg('assistant', JSON.stringify(result, null, 2));
   } catch(e) {
-    addMsg('assistant', 'Error: ' + e.message + '\n\nMake sure the ArcOps API server is running:\ndocker run -p 8080:8080 arcops/arcops');
+    addMsg('assistant', 'Error: ' + e.message + '\n\nMake sure the ArcOps API server is running:\npython -m app.api');
   }
 
   typing.style.display = 'none';
@@ -174,12 +183,15 @@ async function send() {
 }
 
 // Check server status
-fetch(API + '/').catch(() => {});
 fetch(window.location.origin + '/health')
   .then(r => r.json())
-  .then(d => document.getElementById('status').textContent = 'Model: ' + d.adapter)
+  .then(d => {
+    if (d.status !== 'ok') throw new Error(d.detail || 'model unavailable');
+    document.getElementById('status').textContent = 'Model: ' + (d.model || 'unknown');
+    document.getElementById('model-name').textContent = d.adapter || d.model || 'Local model';
+  })
   .catch(() => {
-    document.getElementById('status').textContent = 'Server offline — run: docker run -p 8080:8080 arcops/arcops';
+    document.getElementById('status').textContent = 'Server offline — run: python -m app.api';
     document.querySelector('.status').style.background = '#f85149';
   });
 </script>

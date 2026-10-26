@@ -21,6 +21,7 @@ Security defaults:
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -89,7 +90,7 @@ app = FastAPI(
 def _require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     """Enforce the optional API key when ARC_OPS_API_KEY is configured."""
     expected = os.environ.get("ARC_OPS_API_KEY")
-    if expected and x_api_key != expected:
+    if expected and not hmac.compare_digest(x_api_key or "", expected):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
