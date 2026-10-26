@@ -85,8 +85,8 @@ model**: one engine, one safety layer, one execution path, five interfaces.
 | **Tools** | `create_ec2_instance`, `restart_database`, `get_billing_alert` |
 | **Dataset** | 11,510 raw → **4,285 unique** examples; **64** manual challenge prompts |
 | **Dataset audit** | **0 schema-invalid rows** |
-| **Tests** | **227 passed, 1 skipped** without ML; **228 passed** with GPU extras |
-| **Coverage** | 35% overall, **~58% engine**; schemas 100%, models 98%, safety 64%, core 53%, CLI 47% |
+| **Tests** | **234 passed, 1 skipped** without ML; **235 passed** with training extras |
+| **Coverage** | 39% overall, **~66% engine**; schemas 100%, models 98%, CLI 90%, safety 64%, core 53% |
 | **Quality gates** | `ruff` clean; `mypy --strict` clean across 7 source files |
 | **Quick eval** | 5 built-in cases: tool 5/5, fields 6/11 (54.5%), exact 2/5 (40%) |
 | **End-to-end** | EC2 create against LocalStack 3.0 on Windows + RTX 5070 |
@@ -154,7 +154,7 @@ The CLI, TUI, API, MCP server and `app.exec` all share the same engine
                  cloudops_fc.core
         ┌──────────────────┼──────────────────┐
         │                  │                  │
-   infer()             safety.check()      execute()
+   infer()             safety.check()      execute_tool_call()
    Qwen2.5-7B           JSON Schema         AWS CLI
    + LoRA, 4-bit        known EC2 types     LocalStack (default)
    greedy decoding      cost + policy       real AWS (opt-in)
@@ -259,8 +259,9 @@ and the full non-GPU test suite.
 
 ### 2. Full local stack
 
-Requirements: Python 3.12/3.13, an NVIDIA GPU with ~12 GB VRAM for the 7B
-model, Docker for LocalStack, and the AWS CLI for execution.
+Requirements: Python 3.12–3.14 (CI tests 3.12/3.13), an NVIDIA GPU with
+~12 GB VRAM for the 7B model, Docker for LocalStack, and the AWS CLI for
+execution.
 
 ```bash
 uv sync --extra train --extra tui --extra api
@@ -282,6 +283,9 @@ tested on Linux/WSL2.
 docker run -d --name localstack -p 4566:4566 localstack/localstack:3.0
 arcops tui
 ```
+
+If the container already exists, use `docker start localstack` instead of
+`docker run`.
 
 In the TUI: `c` to create, type the prompt, Enter. `r` refreshes resources,
 `s/t/d/g` stop/start/delete/tag, `q` quits. The TUI uses the same safety and

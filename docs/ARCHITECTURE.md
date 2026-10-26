@@ -84,7 +84,9 @@ canonical modules. They exist so old imports keep working.
 - Decoding: greedy (`do_sample=False`), short output (`MAX_NEW_TOKENS=256`).
 - System prompt: "You are a CloudOps infrastructure assistant. Output ONLY the
   JSON tool call. No explanations, no markdown."
-- Device: CUDA when available; CPU fallback is possible but slow.
+- Device: CUDA is required for the 4-bit bitsandbytes path. Metadata commands
+  (`--help`, `tools`) still work on a CPU-only install, but prompt inference
+  does not.
 - Runtime is imported lazily, so the base package works without PyTorch.
 
 The model is a **compiler front-end**, not an agent. It does not choose tools

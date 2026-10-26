@@ -7,7 +7,7 @@ afterthought.
 
 | Version | Supported |
 |---|---|
-| `v1.0.x` | Yes |
+| `0.1.x` | Yes |
 | Older | No |
 
 ## Reporting a vulnerability

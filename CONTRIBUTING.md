@@ -17,7 +17,13 @@ The default suite does not need PyTorch, CUDA, LocalStack or AWS.
 If `uv sync` fails on Windows with an "Access is denied" error, the project or
 `.venv` is probably inside a synced folder (OneDrive, Dropbox). Keep the
 virtualenv outside the synced folder or exclude `.venv` from sync; the synced
-folder can lock package files during upgrades.
+folder can lock package files during upgrades. You can point uv at an external
+environment without moving the repo:
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = "$env:USERPROFILE\.venvs\arcops"
+uv sync --extra dev
+```
 
 For the full stack:
 
