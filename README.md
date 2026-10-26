@@ -83,10 +83,10 @@ model**: one engine, one safety layer, one execution path, five interfaces.
 |---|---|
 | **Model** | `Qwen/Qwen2.5-7B-Instruct` + QLoRA adapter `CodeSantiago/arcops`, 4-bit |
 | **Tools** | `create_ec2_instance`, `restart_database`, `get_billing_alert` |
-| **Dataset** | 10,854 raw → **3,555 unique** examples; **64** manual challenge prompts |
+| **Dataset** | 11,510 raw → **4,285 unique** examples; **64** manual challenge prompts |
 | **Dataset audit** | **0 schema-invalid rows** |
-| **Tests** | **207 passed, 1 skipped** without ML; **208 passed** with GPU extras |
-| **Coverage** | 34% overall, **~60% engine**; schemas 100%, models 98%, safety 62%, core 52%, CLI 48% |
+| **Tests** | **227 passed, 1 skipped** without ML; **228 passed** with GPU extras |
+| **Coverage** | 35% overall, **~58% engine**; schemas 100%, models 98%, safety 64%, core 53%, CLI 47% |
 | **Quality gates** | `ruff` clean; `mypy --strict` clean across 7 source files |
 | **Quick eval** | 5 built-in cases: tool 5/5, fields 6/11 (54.5%), exact 2/5 (40%) |
 | **End-to-end** | EC2 create against LocalStack 3.0 on Windows + RTX 5070 |
@@ -213,12 +213,12 @@ community LocalStack 3.0 image implements EC2 but not RDS.
 - Fine-tuning: QLoRA with PEFT + TRL; labels masked to the assistant/tool-call
   response.
 - Adapter: `CodeSantiago/arcops` (public, 7B only).
-- Dataset: deterministic generator (`SEED=42`), 15 template families, 10,854
-  raw rows, 3,555 unique after canonical deduplication. Split 80/10/10:
-  2,844 train / 355 val / 356 test, with zero train/test overlap.
+- Dataset: deterministic generator (`SEED=42`), 19 template families, 11,510
+  raw rows, 4,285 unique after canonical deduplication. Split 80/10/10:
+  3,428 train / 429 val / 428 test, with zero train/test overlap.
 - Challenge set: 64 manually authored prompts (cities, ambiguity, noise,
   Spanglish, unknown instance types, read-only billing).
-- Schema audit: all 10,854 rows validate against the packaged JSON Schemas.
+- Schema audit: all 11,510 rows validate against the packaged JSON Schemas.
 
 **Results policy.** No checkpoint is shipped. Historical "100%" numbers came
 from a split that leaked duplicates and are not trustworthy. The current
@@ -383,11 +383,9 @@ The commercial hypothesis is open-core: the local engine stays Apache 2.0;
 team audit, policy packs and a hosted control plane are the paid surface.
 Details and success metrics: [docs/ROADMAP.md](docs/ROADMAP.md).
 
-
 ---
 
 ## Docs
-
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Evaluation protocol and results policy](docs/EVALUATION.md)

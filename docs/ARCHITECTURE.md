@@ -72,8 +72,8 @@ canonical modules. They exist so old imports keep working.
    `requires_approval`, warnings and an estimated monthly cost.
 5. **Approval.** Disruptive actions require an explicit confirmation callback.
    Without one, the action is refused.
-6. **Execution.** `core.execute()` builds an AWS CLI command and runs it against
-   LocalStack or real AWS.
+6. **Execution.** `core.execute_tool_call()` builds an AWS CLI command and runs
+   it against LocalStack or real AWS.
 7. **Feedback.** The interface reports the result, cost and any warnings.
 
 ## Inference
@@ -162,8 +162,9 @@ business logic.
 
 ### Add an interface
 
-Keep it thin: call `core.infer()`, `safety.check()` and `core.execute()`; do not
-duplicate safety or AWS logic. Add a test that mocks the engine.
+Keep it thin: call `core.infer()`, `safety.check()` and
+`core.execute_tool_call()`; do not duplicate safety or AWS logic. Add a test
+that mocks the engine.
 
 ## Testing strategy
 

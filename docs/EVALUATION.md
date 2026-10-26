@@ -11,26 +11,26 @@ The generator is deterministic (`SEED=42`) and defined in
 
 | Metric | Value |
 |---|---|
-| Raw synthetic rows | 10,854 |
-| Unique examples after canonical deduplication | 3,555 |
-| Duplicates removed | 7,299 |
-| Template families | 15 |
+| Raw synthetic rows | 11,510 |
+| Unique examples after canonical deduplication | 4,285 |
+| Duplicates removed | 7,225 |
+| Template families | 19 |
 | Manual challenge prompts | 64 |
 | Schema-invalid rows after audit | 0 |
-| Tool mix | EC2 6,362 / RDS 2,472 / Billing 2,020 |
+| Tool mix | EC2 6,586 / RDS 2,680 / Billing 2,244 |
 
 The canonical deduplication key is `(prompt, tool name, sorted arguments)`.
 Deduplication happens **before** splitting.
 
 ## Splits
 
-The seeded 80/10/10 split operates on the 3,555 unique examples:
+The seeded 80/10/10 split operates on the 4,285 unique examples:
 
 | Split | Examples |
 |---|---|
-| Train | 2,844 |
-| Validation | 355 |
-| Test | 356 |
+| Train | 3,428 |
+| Validation | 429 |
+| Test | 428 |
 | Train/test overlap | 0 |
 
 Training and evaluation call the same split function,
@@ -51,7 +51,7 @@ come from generator templates. It covers:
 - read-only billing requests.
 
 The challenge set has zero overlap with the training prompts. It is tracked in
-git; the 10,854-row training set is generated locally and gitignored.
+git; the 11,510-row training set is generated locally and gitignored.
 
 ## Evaluation modes
 
@@ -132,7 +132,7 @@ python scripts/training/eval.py \
 The packaged JSON Schemas are the same ones used at runtime. A local audit runs
 `jsonschema` over every row:
 
-- all 10,854 rows validate after the `instance_type` pattern was widened to
+- all 11,510 rows validate after the `instance_type` pattern was widened to
   accept real AWS families such as `c6i`, `t4g` and `m7g`;
 - unknown instance types are still blocked at runtime by the priced/safety
   allowlist in `cloudops_fc.safety`.

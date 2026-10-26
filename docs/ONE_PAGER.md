@@ -78,11 +78,11 @@ inference or AWS logic.
 
 | Signal | Result |
 |---|---|
-| Dataset | 10,854 raw → 3,555 unique; 64 manual challenge prompts; 0 schema-invalid rows |
+| Dataset | 11,510 raw → 4,285 unique; 64 manual challenge prompts; 0 schema-invalid rows |
 | Model | Qwen2.5-7B-Instruct + QLoRA adapter, 4-bit, single 12 GB GPU |
-| Tests | 207 passed + 1 skipped without ML; 208 passed with GPU extras |
+| Tests | 227 passed + 1 skipped without ML; 228 passed with GPU extras |
 | Quality | `ruff` clean; `mypy --strict` clean |
-| Coverage | 34% overall; ~60% of the engine; TUI manual |
+| Coverage | 35% overall; ~58% of the engine; TUI manual |
 | Quick eval | 5/5 tool selection, 6/11 fields, 2/5 exact on 5 built-in cases |
 | End-to-end | EC2 create against LocalStack 3.0 on Windows + RTX 5070 |
 
